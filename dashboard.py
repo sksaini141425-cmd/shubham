@@ -270,13 +270,16 @@ def update_state():
     dashboard_state.update(data)
     return jsonify({"ok": True})
 
-def run_dashboard(host="0.0.0.0", port=5000):
+def run_dashboard(host="0.0.0.0", port=None):
     """Run Flask dashboard in a background thread."""
+    if port is None:
+        port = int(os.environ.get('PORT', 5000))
     import logging
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)  # suppress Flask request logs
     app.run(host=host, port=port, debug=False, use_reloader=False)
 
 if __name__ == "__main__":
-    print("Starting ProfitBot Pro Dashboard at http://localhost:5000")
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))
+    print(f"Starting ProfitBot Pro Dashboard at http://localhost:{port}")
+    app.run(host="0.0.0.0", port=port, debug=True)
