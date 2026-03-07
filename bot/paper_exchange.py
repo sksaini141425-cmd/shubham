@@ -50,6 +50,7 @@ class PaperExchange:
                 logger.warning("Attempted to open position while already in one.")
                 return False
 
+            balance_before = round(self.cash, 4)
             self.position_direction = direction
             self.position_size = size
             self.entry_price = current_price
@@ -66,6 +67,7 @@ class PaperExchange:
                 'notional': round(order_value, 2),
                 'fee': round(fee_paid_usd, 4),
                 'pnl': None,
+                'balance_before': balance_before,
                 'balance': round(self.cash, 4)
             })
 
@@ -80,6 +82,7 @@ class PaperExchange:
             elif self.position_direction == 'SHORT':
                 pnl = (self.entry_price - current_price) * self.position_size
 
+            balance_before = round(self.cash, 4)
             self.cash += (pnl - fee_paid_usd)
 
             logger.info(f"[{timestamp}] CLOSED {self.position_direction} {self.position_size:.4f} @ ${current_price:.2f} | PnL: ${pnl:.2f} | Fee: ${fee_paid_usd:.2f} | New Cash: ${self.cash:.2f}")
@@ -94,6 +97,7 @@ class PaperExchange:
                 'notional': round(order_value, 2),
                 'fee': round(fee_paid_usd, 4),
                 'pnl': round(pnl - fee_paid_usd, 4),
+                'balance_before': balance_before,
                 'balance': round(self.cash, 4)
             })
 

@@ -146,7 +146,8 @@ HTML_TEMPLATE = """
                             <th>Price</th>
                             <th>Notional</th>
                             <th>PnL</th>
-                            <th>Balance</th>
+                            <th>Bal Before</th>
+                            <th>Bal After</th>
                         </tr>
                     </thead>
                     <tbody id="trade-table">
@@ -221,7 +222,8 @@ HTML_TEMPLATE = """
                         <td>$${(t.price || 0).toLocaleString()}</td>
                         <td>$${(t.notional || 0).toFixed(2)}</td>
                         <td class="${pnlClass}">${pnlStr}</td>
-                        <td>$${(t.balance || 0).toFixed(4)}</td>
+                        <td style="color:var(--muted)">$${(t.balance_before || 0).toFixed(4)}</td>
+                        <td>${t.balance !== undefined ? '$' + parseFloat(t.balance).toFixed(4) : '—'}</td>
                     </tr>`;
                 }).join('');
             }
