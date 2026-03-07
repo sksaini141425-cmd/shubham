@@ -24,8 +24,9 @@ logger = logging.getLogger("MainBot")
 # --- CONFIGURATION (loaded from environment variables for cloud safety) ---
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '8506152391')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyDD473_cCMhXzb9s8iX1U3IWcuz8uYKjbg')
-INITIAL_CAPITAL = float(os.environ.get('INITIAL_CAPITAL', '2.98'))
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyDD473_cCMhXzb9s8iX1U3IWcuz8uYKjbg') # CONFIGURATION - Binance restricts US IPs (like Render's servers), so we must use Testnet
+TESTNET = True
+INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "2.98"))
 LEVERAGE = int(os.environ.get('LEVERAGE', '45'))
 TIMEFRAME = '1m'
 TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '20'))
@@ -300,7 +301,7 @@ def run_paper_trading():
     logger.info("🤖 ProfitBot Pro — Multi-Symbol Scanner Starting...")
 
     # Initialize shared components
-    data_loader = DataLoader(exchange_id='binanceusdm', testnet=False)
+    data_loader = DataLoader(exchange_id='binanceusdm', testnet=TESTNET)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     ai_brain = AIBrain(GEMINI_API_KEY)
 
