@@ -1,6 +1,6 @@
 import logging
 from bot.data_loader import DataLoader
-from bot.strategy import GridScalperStrategy
+from bot.strategy import SmartMoneyStrategy
 from bot.paper_exchange import PaperExchange
 
 # Setup Logging for Backtest Output
@@ -10,12 +10,12 @@ logger = logging.getLogger("Backtester")
 def run_backtest(symbol='BTCUSDT', timeframe='1m', limit=5000, leverage=45, initial_capital=3.0, atr_period=24, sma_period=100):
     logger.info("=" * 60)
     logger.info(f"STARTING BACKTEST: {symbol} | {timeframe} | {limit} Candles")
-    logger.info(f"Strategy: Grid Scalper SMA/ATR ({sma_period}/{atr_period}) | Leverage: {leverage}x")
+    logger.info(f"Strategy: SmartMoney | Leverage: {leverage}x")
     logger.info("=" * 60)
 
     # 1. Initialize Components
-    data_loader = DataLoader(exchange_id='binanceusdm')
-    strategy = GridScalperStrategy(atr_period=atr_period, sma_period=sma_period, leverage=leverage)
+    data_loader = DataLoader(exchange_id='binanceusdm', testnet=False)
+    strategy = SmartMoneyStrategy(leverage=leverage)
     exchange = PaperExchange(initial_capital=initial_capital)
 
     # 2. Fetch Historical Data (Batch)

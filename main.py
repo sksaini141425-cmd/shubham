@@ -277,16 +277,38 @@ def telegram_listener(notifier, ai_brain):
 
                 else:
                     with symbol_states_lock:
-                        active = [(s, d) for s, d in symbol_states.items() if d['direction'] != 'FLAT']
-                    context = (
-                        f"Scanning {len(symbol_states)} Binance Futures markets. "
-                        f"Capital: ${INITIAL_CAPITAL}. "
-                        f"Open positions: {len(active)}. "
-                        f"Strategy: Smart Money Multi-Indicator Confirmation (RSI, MACD, BB). "
-                        f"All PnL shown is NET of Binance fees (0.05% per side). "
-                        f"Trading status: {'Active' if bot_running['value'] else 'Stopped'}."
-                    )
-                    ai_reply = ai_brain.generate_reply(text, context=context)
+                        # Build a highly detailed live state report for the AI
+                        active_positions = [(s, d) for s, d in symbol_states.items() if d['direction'] != 'FLAT']
+                        scanning_count = len(symbol_states)
+                        
+                        context_lines = [
+                            f"Live Trading Status: Active (Scanning {scanning_count} pairs)",
+                            f"Paper Capital: ${INITIAL_CAPITAL} USDT",
+                            f"Total Open Positions: {len(active_positions)}"
+                        ]
+                        
+                        if active_positions:
+                            context_lines.append("\n--- OPEN POSITIONS ---")
+                            total_upnl = 0
+                            for sym, data in active_positions:
+                                pnl = data.get('upnl', 0)
+                                total_upnl += pnl
+                                sign = "+" if pnl >= 0 else ""
+                                context_lines.append(
+                                    f"• {sym}: {data['direction']} at ${data['entry']:.5f} | "
+                                    f"Current Price: ${data['price']:.5f} | "
+                                    f"Net PnL: {sign}${pnl:.4f} | "
+                                    f"Trailing SL: {data.get('trailing_sl_pct', 0) * 100:.2f}%"
+                                )
+                            context_lines.append(f"\nTotal Unrealized Net PnL: ${total_upnl:.4f}")
+                        else:
+                            context_lines.append("No positions open right now.")
+                            
+                        context = "\n".join(context_lines)
+
+                    # Pass chat_id to maintain memory per-user
+                    ai_reply = ai_brain.generate_reply(text, context=context, chat_id=str(chat_id))
+                    
                     if ai_reply:
                         notifier.send_message(ai_reply)
                     else:
