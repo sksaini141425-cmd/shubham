@@ -50,11 +50,21 @@ class AIBrain:
                 "- If the user asks about their trades, their PnL, or what markets you are in, use the live context block to answer them accurately and beautifully.\n"
                 "- Be concise but highly intelligent. Use emojis and markdown formatting appropriately."
             )
-            # Use specific system instructions if the model supports it, otherwise prepend to history
+            # Initialize chat history using valid Gemini format
             try:
-                # Gemini 1.5 Pro/Flash supports system_instruction
-                self.active_chats[chat_id] = self.model.start_chat(history=[{"role": "user", "parts": [system_instruction]}, {"role": "model", "parts": ["Understood. I am ProfitBot Pro and I have access to the live state. I am ready to assist the user."] }])
-            except:
+                # Use standard system instruction property for Gemini 1.5 if available
+                if hasattr(self.model, '_system_instruction'):
+                     self.model = genai.GenerativeModel(
+                         model_name=self.model_name,
+                         system_instruction=system_instruction
+                     )
+                     self.active_chats[chat_id] = self.model.start_chat()
+                else:
+                    # Fallback for simpler models - just start an empty chat and send the prompt as the first message silently
+                    self.active_chats[chat_id] = self.model.start_chat()
+                    self.active_chats[chat_id].send_message(f"System Instructions: {system_instruction}")
+            except Exception as e:
+                 logger.error(f"Chat Init Error: {e}")
                  self.active_chats[chat_id] = self.model.start_chat()
                  
         return self.active_chats[chat_id]
