@@ -8,7 +8,7 @@ import logging
 import threading
 import os
 from bot.data_loader import DataLoader
-from bot.strategy import GridScalperStrategy
+from bot.strategy import SmartMoneyStrategy
 from bot.paper_exchange import PaperExchange
 from bot.notifier import TelegramNotifier
 from bot.ai_brain import AIBrain
@@ -105,25 +105,58 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 }
 
             # 4. Manage open position
-            if exchange.is_in_position and sma is not None:
+            if exchange.is_in_position and 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
                 entry_val = exchange.position_size * exchange.entry_price
                 upnl_pct = upnl_net / entry_val if entry_val > 0 else 0
+                
+                # Retrieve current ATR for dynamic SL/TP calculation
+                current_atr = data_list[-1]['ATR']
+                atr_pct = (current_atr / current_price)
+                
+                # Default Stop Loss: 1.5x ATR, but cap at max 2% Net Loss
+                default_sl_pct = min(-0.02, -(atr_pct * 1.5))
+                
+                # Fetch dynamically updated trailing SL for this position, or initialize to default SL
+                with symbol_states_lock:
+                    if 'trailing_sl_pct' not in symbol_states[symbol]:
+                        symbol_states[symbol]['trailing_sl_pct'] = default_sl_pct
+                    
+                    sl_pct = symbol_states[symbol]['trailing_sl_pct']
 
-                # Break-even: once net profit > 0.25%, lock in at 0% risk
-                stop_loss_pct = -0.005  # -0.5% default
-                if upnl_pct >= 0.0025:
-                    stop_loss_pct = 0.0  # Break-even activated
+                # Trailing Take-Profit Logic
+                # Move the SL up as profit increases to let winners run
+                # Step 1: Break-even (0% SL) once profit reaches 0.5%
+                if upnl_pct >= 0.005 and sl_pct < 0.0:
+                    sl_pct = 0.0
+                
+                # Step 2: Lock in 50% of the profit if it rockets up
+                # e.g. If upnl_pct is 3%, set SL to 1.5% profit
+                if upnl_pct >= 0.015:
+                    potential_new_sl = upnl_pct * 0.5 
+                    if potential_new_sl > sl_pct:
+                        sl_pct = potential_new_sl
+                        
+                with symbol_states_lock:
+                    symbol_states[symbol]['trailing_sl_pct'] = sl_pct
 
                 close_position = False
-                if upnl_pct <= stop_loss_pct:
-                    logger.warning(f"[{symbol}] STOP LOSS at {stop_loss_pct*100:.1f}% (NET)")
+                
+                # Hit Dynamic Stop-Loss / Trailing Profit Stop
+                if upnl_pct <= sl_pct:
+                    if sl_pct > 0:
+                        logger.warning(f"[{symbol}] TRAILING PROFIT STOP HIT at {sl_pct*100:.2f}% (NET)")
+                    else:
+                        logger.warning(f"[{symbol}] STOP LOSS HIT at {sl_pct*100:.2f}% (NET)")
                     close_position = True
 
+                # Trend-Reversal Exit (Emergency Eject)
                 if not close_position:
-                    if exchange.position_direction == 'LONG' and (current_price >= sma or latest_signal == 'SHORT'):
+                    if exchange.position_direction == 'LONG' and latest_signal == 'SHORT':
                         close_position = True
-                    elif exchange.position_direction == 'SHORT' and (current_price <= sma or latest_signal == 'LONG'):
+                        logger.warning(f"[{symbol}] Reversal signal (LONG->SHORT). Closing.")
+                    elif exchange.position_direction == 'SHORT' and latest_signal == 'LONG':
                         close_position = True
+                        logger.warning(f"[{symbol}] Reversal signal (SHORT->LONG). Closing.")
 
                 if close_position:
                     gross_pnl = exchange.get_unrealized_pnl(current_price)
@@ -134,6 +167,11 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     net_pnl_pct = (net_pnl / notional * 100) if notional > 0 else 0
 
                     exchange.execute_market_order('CLOSE', exchange.position_size, current_price, latest_time)
+
+                    # Clear trailing state
+                    with symbol_states_lock:
+                        if 'trailing_sl_pct' in symbol_states[symbol]:
+                            del symbol_states[symbol]['trailing_sl_pct']
 
                     emoji = "✅" if net_pnl > 0 else "❌"
                     msg = (
@@ -232,7 +270,7 @@ def telegram_listener(notifier, ai_brain):
                         f"Scanning {len(symbol_states)} Binance Futures markets. "
                         f"Capital: ${INITIAL_CAPITAL}. "
                         f"Open positions: {len(active)}. "
-                        f"Strategy: Grid Scalper with 200 EMA Anti-Loss filter. "
+                        f"Strategy: Smart Money Multi-Indicator Confirmation (RSI, MACD, BB). "
                         f"All PnL shown is NET of Binance fees (0.05% per side). "
                         f"Trading status: {'Active' if bot_running['value'] else 'Stopped'}."
                     )
@@ -276,7 +314,7 @@ def run_paper_trading():
         f"🚀 *ProfitBot Pro — Multi-Scanner Online!*\n"
         f"📡 Scanning *{len(symbols)} markets* simultaneously\n"
         f"💰 Capital: `${INITIAL_CAPITAL} USDT` (paper)\n"
-        f"🛡️ Anti-Loss: EMA200 filter + Break-even\n"
+        f"🛡️ Smart Money: RSI + MACD + ATR Trailing SL\n"
         f"💸 All PnL shown after Binance fees\n"
         f"📊 Dashboard: `http://localhost:{DASHBOARD_PORT}`\n\n"
         f"Markets: `{'`, `'.join(symbols[:10])}`... and {len(symbols)-10} more!"
@@ -285,7 +323,7 @@ def run_paper_trading():
     # 5. Create one strategy + exchange per symbol and start threads
     symbol_threads = []
     for symbol in symbols:
-        strategy = GridScalperStrategy(atr_period=24, sma_period=100, leverage=LEVERAGE)
+        strategy = SmartMoneyStrategy(leverage=LEVERAGE)
         exchange = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
         exchange.symbol = symbol
 
