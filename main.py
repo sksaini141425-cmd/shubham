@@ -263,6 +263,17 @@ def telegram_listener(notifier, ai_brain):
                     bot_running["value"] = True
                     notifier.send_message("🚀 *All scanners resumed!* Scanning the market...")
 
+                elif text in ["hi", "hii", "hello", "hey", "/help", "help", "try", "/try"]:
+                    notifier.send_message(
+                        "👋 *Hello! I am ProfitBot Pro.*\n\n"
+                        "Here is what you can tell me to do:\n"
+                        "• `/status` - View live PnL and active trades.\n"
+                        "• `/symbols` - See what coins I am scanning.\n"
+                        "• `/stop` - Pause the bot (no new entries).\n"
+                        "• `/start` - Resume scanning the market.\n"
+                        "• Or just ask me a question about my strategy!"
+                    )
+
                 else:
                     with symbol_states_lock:
                         active = [(s, d) for s, d in symbol_states.items() if d['direction'] != 'FLAT']
