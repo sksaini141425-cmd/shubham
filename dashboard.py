@@ -241,6 +241,10 @@ HTML_TEMPLATE = """
 def dashboard():
     return render_template_string(HTML_TEMPLATE)
 
+@app.route('/ping')
+def ping():
+    return "pong", 200
+
 @app.route('/api/state')
 def api_state():
     trades = []
