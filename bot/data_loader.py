@@ -87,6 +87,13 @@ class DataLoader:
         Fetches the top N most actively traded USDT perpetual futures symbols by 24h volume.
         Filters out low-liquidity symbols.
         """
+        fallback_symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+                            'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT']
+
+        if self.base_url == "https://testnet.binancefuture.com":
+            logger.info("Testnet active. Bypassing dynamic top symbol fetch to avoid 451 errors.")
+            return fallback_symbols[:top_n]
+
         try:
             url = f"{self.base_url}/fapi/v1/ticker/24hr"
             resp = requests.get(url, timeout=10)
@@ -105,8 +112,7 @@ class DataLoader:
 
         except Exception as e:
             logger.error(f"Error fetching top symbols: {e}")
-            return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-                    'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT']
+            return fallback_symbols[:top_n]
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=100):
         """Fetches OHLCV candles from Binance USDM Futures."""
