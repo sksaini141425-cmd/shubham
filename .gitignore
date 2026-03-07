@@ -1,0 +1,8 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+trade_log.json
+*.txt
+backtest_results.txt

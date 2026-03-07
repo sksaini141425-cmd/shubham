@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: profitbot-pro
+    env: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: 8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM
+      - key: TELEGRAM_CHAT_ID
+        value: "8506152391"
+      - key: GEMINI_API_KEY
+        value: AIzaSyDD473_cCMhXzb9s8iX1U3IWcuz8uYKjbg
+      - key: INITIAL_CAPITAL
+        value: "2.98"
+      - key: PORT
+        value: "5000"
