@@ -22,9 +22,9 @@ logging.basicConfig(
 logger = logging.getLogger("MainBot")
 
 # --- CONFIGURATION (loaded from environment variables for cloud safety) ---
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '8506152391')
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyDa6_XPP2Gk_iNImqHAVZ2dGRqUuLnyVqo') # CONFIGURATION - Binance restricts US IPs (like Render's servers), so we must use Testnet
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set this in Render Environment Variables, NEVER hardcode it here!
 TESTNET = True
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "2.98"))
 LEVERAGE = int(os.environ.get('LEVERAGE', '45'))

@@ -11,7 +11,7 @@ services:
       - key: TELEGRAM_CHAT_ID
         value: "8506152391"
       - key: GEMINI_API_KEY
-        value: AIzaSyDa6_XPP2Gk_iNImqHAVZ2dGRqUuLnyVqo
+        sync: false
       - key: INITIAL_CAPITAL
         value: "2.98"
       - key: PORT
