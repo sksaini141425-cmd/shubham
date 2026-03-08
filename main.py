@@ -13,7 +13,7 @@ from bot.strategy import SmartMoneyStrategy
 from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
 from bot.ai_brain import AIBrain
-from dashboard import run_dashboard, dashboard_state, manual_close_requests
+from dashboard import run_dashboard, dashboard_state, manual_close_requests, clear_history_requested
 
 # Setup Logging
 logging.basicConfig(
@@ -197,7 +197,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 if upnl_pct >= TAKE_PROFIT_PCT:
                     close_position = True
                     close_reason = f"TAKE PROFIT HIT at {upnl_pct*100:.2f}% (NET) 🎯"
-                    logger.info(f"[{symbol}] {close_reason}")
+                    logger.info(f"[{symbol}] {close_reason} (Price: {current_price})")
 
                 # --- MAX HOLD TIME SAFETY EXIT ---
                 if not close_position:
@@ -218,7 +218,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                         logger.warning(f"[{symbol}] {close_reason}")
                     else:
                         close_reason = f"STOP LOSS HIT at {sl_pct*100:.2f}% (NET)"
-                        logger.warning(f"[{symbol}] {close_reason}")
+                        logger.warning(f"[{symbol}] {close_reason} (Price: {current_price}, SL: {sl_price})")
 
                 # --- TREND-REVERSAL EXIT ---
                 if not close_position:
@@ -471,6 +471,7 @@ def run_paper_trading():
                     s.get('upnl', 0) for s in symbol_states.values()
                     if s.get('direction', 'FLAT') != 'FLAT'
                 )
+                dashboard_state["trades"] = list(global_account.trade_history)
             with active_trades_lock:
                 open_count = len(active_trades)
             # Pass live balance (realized cash + unrealized PnL) and trade slot info to dashboard
@@ -480,6 +481,13 @@ def run_paper_trading():
             dashboard_state["open_trade_count"] = open_count
             dashboard_state["max_trades"] = MAX_CONCURRENT_TRADES
             dashboard_state["bot_status"] = "RUNNING 🟢" if bot_running["value"] else "STOPPED 🛑"
+            # -- Handle History Clear Request --
+            if clear_history_requested[0]:
+                with global_account.lock:
+                    global_account.trade_history = []
+                clear_history_requested[0] = False
+                logger.info("Trade history cleared in memory.")
+
             time.sleep(5)
 
     except KeyboardInterrupt:

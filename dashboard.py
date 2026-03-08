@@ -16,6 +16,7 @@ dashboard_state = {
 }
 
 manual_close_requests = set()
+clear_history_requested = [False]
 
 TRADE_LOG_FILE = "trade_log.json"
 
@@ -816,13 +817,13 @@ def close_trade(symbol):
 
 @app.route('/api/clear_history', methods=['POST'])
 def clear_history():
+    clear_history_requested[0] = True
     if os.path.exists(TRADE_LOG_FILE):
         try:
             with open(TRADE_LOG_FILE, "w") as f:
                 json.dump([], f)
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
-    # Update trades in active state memory if tracked, but the front-end fetch will just pick up the empty list on next refresh.
     return jsonify({"ok": True})
 
 def run_dashboard(host="0.0.0.0", port=None):
