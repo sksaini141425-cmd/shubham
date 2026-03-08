@@ -129,9 +129,7 @@ class DataLoader:
 
             return candles if candles else None
 
-        except Exception as e:
-            logger.error(f"Error fetching {symbol} from CryptoCompare: {e}")
-            return None
+        return None
 
     def fetch_ticker(self, symbol):
         """Fetches latest price from CryptoCompare."""
