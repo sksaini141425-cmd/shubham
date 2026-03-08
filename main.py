@@ -69,7 +69,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 continue
 
             # 1. Fetch candles
-            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
+            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=250)
             if not data_list:
                 time.sleep(15)
                 continue

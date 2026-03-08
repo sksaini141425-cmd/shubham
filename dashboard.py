@@ -70,9 +70,9 @@ HTML_TEMPLATE = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ProfitBot Pro — Chart Dashboard</title>
+<title>ProfitBot Pro — Advanced TradingView Dashboard</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-<script src="https://unpkg.com/lightweight-charts@4.0.0/dist/lightweight-charts.standalone.production.js"></script>
+<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <style>
 :root {
     --bg: #060b18; --card: #0c1529; --card2: #111d35;
@@ -135,7 +135,7 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 .badge.scanning { background:rgba(79,142,247,.12); color:var(--blue); }
 .badge.neutral,.badge.none { background:rgba(90,112,153,.12); color:var(--muted); }
 
-/* Full Chart Modal */
+/* Modal with Full TradingView Widget */
 .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.8);
     z-index:1000; align-items:center; justify-content:center; }
 .modal-overlay.open { display:flex; }
@@ -146,7 +146,7 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 .close-btn { width:32px; height:32px; border-radius:50%; background:var(--card2);
     border:1px solid var(--border); cursor:pointer; font-size:1.1rem; display:flex; align-items:center; justify-content:center; }
 .close-btn:hover { background:var(--red); color:white; border-color:var(--red); }
-.modal-chart { width:100%; height:340px; border-radius:10px; overflow:hidden; }
+.modal-chart { width:100%; height:450px; border-radius:10px; overflow:hidden; }
 .indicator-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:14px 0; }
 .ind-card { background:var(--card2); border:1px solid var(--border); border-radius:10px; padding:12px; }
 .ind-label { font-size:0.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:5px; }
@@ -356,7 +356,8 @@ function renderSymbols() {
                     </div>
                     <div class="card-price" id="price-${sym}">$${(s.price||0).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:6})}</div>
                 </div>
-                <div class="chart-container" id="chart-${sym}"></div>
+                <!-- Binance Style Advanced TradingView Widget embedded per card -->
+                <div class="chart-container" id="tv_widget_${sym}"></div>
                 <div class="card-footer">
                     <span class="indicator-pill" id="rsi-${sym}">RSI: ${s.rsi ? s.rsi.toFixed(1) : '—'}</span>
                     <span class="indicator-pill" id="macd-${sym}">MACD: ${s.macd_hist ? (s.macd_hist > 0 ? '▲' : '▼') : '—'}</span>
@@ -365,10 +366,8 @@ function renderSymbols() {
                 </div>`;
             grid.appendChild(card);
 
-            // Draw mini chart
-            if (s.candles && s.candles.length > 0) {
-                drawMiniChart(sym, s.candles, s);
-            }
+            // Draw mini advanced chart widget
+            drawMiniChart(sym);
         } else {
             // Update existing card
             card.className = 'symbol-card' + (inPos?' in-position':'');
@@ -388,39 +387,26 @@ function renderSymbols() {
     });
 }
 
-function drawMiniChart(sym, candles, s) {
-    const el = document.getElementById('chart-'+sym);
-    if (!el || miniCharts[sym]) return;
-    const chart = LightweightCharts.createChart(el, {
-        width: el.clientWidth || 280, height: 120,
-        layout:{ background:{color:'transparent'}, textColor:'transparent' },
-        grid:{ vertLines:{visible:false}, horzLines:{color:'rgba(26,39,68,0.5)'} },
-        crosshair:{ mode: LightweightCharts.CrosshairMode.Hidden },
-        handleScroll:false, handleScale:false,
-        timeScale:{ visible:false }
+function drawMiniChart(sym) {
+    if (miniCharts[sym]) return;
+    const tvSymbol = "BINANCE:" + sym; // Ensures it uses Binance data natively
+    miniCharts[sym] = new TradingView.widget({
+        "container_id": "tv_widget_"+sym,
+        "width": "100%",
+        "height": "120",
+        "symbol": tvSymbol,
+        "interval": "1",
+        "timezone": "Etc/UTC",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "enable_publishing": false,
+        "hide_top_toolbar": true,
+        "hide_legend": true,
+        "save_image": false,
+        "toolbar_bg": "#0c1529",
+        "studies": [] // Clean chart for mini view
     });
-    const series = chart.addCandlestickSeries({
-        upColor:'#00e5a0', downColor:'#ff4d6d',
-        borderUpColor:'#00e5a0', borderDownColor:'#ff4d6d',
-        wickUpColor:'#00e5a0', wickDownColor:'#ff4d6d'
-    });
-    const data = candles.map(c => ({
-        time: Math.floor(c.t/1000), open:c.o, high:c.h, low:c.l, close:c.c
-    }));
-    series.setData(data);
-
-    // Draw BB if available
-    if (s.bb_upper && s.bb_lower) {
-        const bbU = chart.addLineSeries({ color:'rgba(167,139,250,0.4)', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
-        const bbL = chart.addLineSeries({ color:'rgba(167,139,250,0.4)', lineWidth:1, priceLineVisible:false, lastValueVisible:false });
-        const lastT = data[data.length-1]?.time;
-        if (lastT) {
-            bbU.setData([{time:lastT, value:s.bb_upper}]);
-            bbL.setData([{time:lastT, value:s.bb_lower}]);
-        }
-    }
-    chart.timeScale().fitContent();
-    miniCharts[sym] = chart;
 }
 
 function openModal(sym) {
@@ -435,55 +421,32 @@ function updateModal(sym) {
     if (!s) return;
     const el = document.getElementById('modal-chart');
     el.innerHTML = '';
-
-    if (modalChart) { try { modalChart.remove(); } catch(e){} modalChart = null; }
-
-    modalChart = LightweightCharts.createChart(el, {
-        width: el.clientWidth || 900, height: 340,
-        layout:{ background:{color:'#0a1428'}, textColor:'#5a7099' },
-        grid:{ vertLines:{color:'rgba(26,39,68,0.5)'}, horzLines:{color:'rgba(26,39,68,0.5)'} },
-        crosshair:{ mode: LightweightCharts.CrosshairMode.Magnet },
-        timeScale:{ timeVisible:true, secondsVisible:false }
+    
+    // Mount full-featured advanced Binance-style TradingView widget
+    const tvSymbol = "BINANCE:" + sym;
+    modalChart = new TradingView.widget({
+        "container_id": "modal-chart",
+        "width": "100%",
+        "height": "450",
+        "symbol": tvSymbol,
+        "interval": "1",
+        "timezone": "Etc/UTC",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "enable_publishing": false,
+        "hide_top_toolbar": false,
+        "hide_legend": false,
+        "save_image": false,
+        "toolbar_bg": "#0a1428",
+        // Pre-load the exact indicators the bot uses!
+        "studies": [
+            "MACD@tv-basicstudies",      // MACD (12, 26, 9)
+            "RSI@tv-basicstudies",       // RSI (14)
+            "BB@tv-basicstudies",        // Bollinger Bands (20)
+            "MASimple@tv-basicstudies"   // EMA 200 equivalent (users can configure it)
+        ]
     });
-
-    const candleSeries = modalChart.addCandlestickSeries({
-        upColor:'#00e5a0', downColor:'#ff4d6d',
-        borderUpColor:'#00e5a0', borderDownColor:'#ff4d6d',
-        wickUpColor:'#00e5a0', wickDownColor:'#ff4d6d'
-    });
-
-    if (s.candles && s.candles.length > 0) {
-        const data = s.candles.map(c => ({
-            time: Math.floor(c.t/1000), open:c.o, high:c.h, low:c.l, close:c.c
-        }));
-        candleSeries.setData(data);
-
-        // EMA 200 line - show as reference
-        if (s.ema200 > 0) {
-            const ema = modalChart.addLineSeries({ color:'#4f8ef7', lineWidth:1, title:'EMA200', priceLineVisible:false });
-            ema.setData(data.map(d => ({time:d.time, value:s.ema200})));
-        }
-        // BB Bands
-        if (s.bb_upper && s.bb_lower) {
-            const bbU = modalChart.addLineSeries({ color:'rgba(167,139,250,0.6)', lineWidth:1, title:'BB Upper', priceLineVisible:false, lastValueVisible:false });
-            const bbM = modalChart.addLineSeries({ color:'rgba(167,139,250,0.3)', lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false });
-            const bbL = modalChart.addLineSeries({ color:'rgba(167,139,250,0.6)', lineWidth:1, title:'BB Lower', priceLineVisible:false, lastValueVisible:false });
-            bbU.setData(data.map(d => ({time:d.time, value:s.bb_upper})));
-            bbM.setData(data.map(d => ({time:d.time, value:s.bb_middle})));
-            bbL.setData(data.map(d => ({time:d.time, value:s.bb_lower})));
-        }
-        // Entry, TP, SL price lines
-        if (s.entry > 0) {
-            candleSeries.createPriceLine({ price:s.entry, color:'#4f8ef7', lineWidth:1, title:'Entry', lineStyle:2 });
-        }
-        if (s.tp_price) {
-            candleSeries.createPriceLine({ price:s.tp_price, color:'#00e5a0', lineWidth:2, title:'TP', lineStyle:0 });
-        }
-        if (s.sl_price) {
-            candleSeries.createPriceLine({ price:s.sl_price, color:'#ff4d6d', lineWidth:2, title:'SL', lineStyle:0 });
-        }
-        modalChart.timeScale().fitContent();
-    }
 
     // Indicators Row
     const rsiColor = getRsiColor(s.rsi);
@@ -594,10 +557,10 @@ function renderHistory() {
 }
 
 function closeModal(e) {
-    if (!e || e.target === document.getElementById('modal')) {
+    if (!e || e.target === document.getElementById('modal') || e.target.classList.contains('close-btn')) {
         document.getElementById('modal').classList.remove('open');
         currentSym = null;
-        if (modalChart) { try{modalChart.remove();}catch(e){} modalChart=null; }
+        if (modalChart) modalChart = null;
     }
 }
 
