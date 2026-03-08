@@ -25,19 +25,20 @@ TOP_SYMBOLS = [
 ]
 
 def _fetch_live_prices():
-    """Batch fetch live prices from CryptoCompare when scanner threads haven't populated state."""
+    """Batch fetch live prices from MEXC when scanner threads haven't populated state."""
     try:
-        syms_cc = [s.replace('USDT', '') for s in TOP_SYMBOLS]
         resp = req_lib.get(
-            'https://min-api.cryptocompare.com/data/pricemulti',
-            params={'fsyms': ','.join(syms_cc), 'tsyms': 'USDT'},
+            'https://api.mexc.com/api/v3/ticker/price',
             timeout=8
         )
         if resp.status_code == 200:
             data = resp.json()
+            # Convert list of {symbol, price} to a dict map
+            price_map = {item['symbol']: float(item['price']) for item in data}
+            
             result = {}
-            for sym, cc_sym in zip(TOP_SYMBOLS, syms_cc):
-                price = data.get(cc_sym, {}).get('USDT', 0)
+            for sym in TOP_SYMBOLS:
+                price = price_map.get(sym, 0)
                 state = dashboard_state.get('symbols', {}).get(sym, {})
                 result[sym] = {
                     'price': price,

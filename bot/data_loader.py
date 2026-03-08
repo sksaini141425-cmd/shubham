@@ -8,18 +8,13 @@ logger = logging.getLogger(__name__)
 TAKER_FEE = 0.0005   # 0.05%
 MAKER_FEE = 0.0002   # 0.02%
 
-# CryptoCompare public API — no API key needed for basic OHLCV, no US geo-block
-CRYPTOCOMPARE_BASE = "https://min-api.cryptocompare.com/data/v2"
-
-# Map of symbol → CryptoCompare base symbol (strip USDT)
-def _to_cc_symbol(symbol):
-    return symbol.replace('USDT', '')
+# MEXC Public spot API - No US geo-block, no API key needed for basic market data
+MEXC_BASE = "https://api.mexc.com/api/v3"
 
 class DataLoader:
-    def __init__(self, exchange_id='cryptocompare', api_key=None, secret=None, testnet=False):
+    def __init__(self, exchange_id='mexc', api_key=None, secret=None, testnet=False):
         self._symbol_info_cache = {}
-        logger.info("Using CryptoCompare public API for market data (US-accessible, no geo-block).")
-        # Pre-populate symbol info with known defaults (CryptoCompare doesn't have futures-style info)
+        logger.info("Using MEXC public API for market data (US-accessible, reliable).")
         self._load_default_symbol_info()
 
     def _load_default_symbol_info(self):
@@ -39,7 +34,6 @@ class DataLoader:
                 'taker_fee': TAKER_FEE,
                 'maker_fee': MAKER_FEE
             }
-        logger.info(f"Pre-loaded default info for {len(symbols)} symbols.")
 
     def get_symbol_info(self, symbol):
         return self._symbol_info_cache.get(symbol, {
@@ -58,87 +52,68 @@ class DataLoader:
         return round(int(quantity / step_size) * step_size, precision)
 
     def get_top_futures_symbols(self, top_n=20, min_volume_usd=50_000_000):
-        """Returns hardcoded top symbols — CryptoCompare sorting isn't needed since we always scan the same set."""
+        # We use a hardcoded safe list for our strategy to ensure we don't scan meme coins
         symbols = [
             'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
             'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
             'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
             'AAVEUSDT', 'NEARUSDT', 'ARBUSDT', 'APTUSDT', 'OPUSDT'
         ]
-        logger.info(f"Scanning {top_n} hardcoded symbols: {symbols[:top_n]}")
+        logger.info(f"Scanning {top_n} symbols: {symbols[:top_n]}")
         return symbols[:top_n]
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=100):
         """
-        Fetches OHLCV candles from CryptoCompare.
-        No US geo-restrictions. No API key required (100k/month free tier).
+        Fetches OHLCV candles from MEXC public API.
+        MEXC uses the exact same return format as Binance.
         """
-        base = _to_cc_symbol(symbol)
-
-        # Map timeframe to CryptoCompare endpoint
-        if timeframe in ['1m', '3m', '5m', '15m', '30m']:
-            endpoint = f"{CRYPTOCOMPARE_BASE}/histominute"
-            aggregate = int(timeframe.replace('m', ''))
-        elif timeframe in ['1h', '2h', '4h']:
-            endpoint = f"{CRYPTOCOMPARE_BASE}/histohour"
-            aggregate = int(timeframe.replace('h', ''))
-        else:
-            endpoint = f"{CRYPTOCOMPARE_BASE}/histoday"
-            aggregate = 1
-
+        endpoint = f"{MEXC_BASE}/klines"
+        
         for attempt in range(3):
             try:
                 resp = requests.get(endpoint, params={
-                    'fsym': base,
-                    'tsym': 'USDT',
-                    'limit': limit,
-                    'aggregate': aggregate
+                    'symbol': symbol,
+                    'interval': timeframe,
+                    'limit': limit
                 }, timeout=10)
+                
+                if resp.status_code == 429: # Rate limited
+                    logger.warning(f"MEXC rate limit hit for {symbol}. Backing off 3s...")
+                    time.sleep(3)
+                    continue
+                    
                 resp.raise_for_status()
                 data = resp.json()
 
-                if data.get('Response') == 'Error':
-                    msg = data.get('Message', '')
-                    if 'rate limit' in msg.lower() and attempt < 2:
-                        logger.warning(f"CryptoCompare rate limit for {symbol}. Retrying in 3s...")
-                        time.sleep(3)
-                        continue
-                    logger.error(f"CryptoCompare error for {symbol}: {msg}")
+                if not data or not isinstance(data, list):
                     return None
-                    
-                break # Success, exit retry loop
+
+                candles = [{
+                    'timestamp': int(k[0]),
+                    'open': float(k[1]),
+                    'high': float(k[2]),
+                    'low': float(k[3]),
+                    'close': float(k[4]),
+                    'volume': float(k[5])
+                } for k in data]
+
+                return candles
+                
             except Exception as e:
                 if attempt < 2:
                     time.sleep(2)
                     continue
-                logger.error(f"Error fetching {symbol} from CryptoCompare: {e}")
+                logger.error(f"Error fetching {symbol} from MEXC: {e}")
                 return None
-
-            raw = data.get('Data', {}).get('Data', [])
-            if not raw:
-                return None
-
-            candles = [{
-                'timestamp': int(k['time']) * 1000,
-                'open': float(k['open']),
-                'high': float(k['high']),
-                'low': float(k['low']),
-                'close': float(k['close']),
-                'volume': float(k['volumefrom'])
-            } for k in raw if k['close'] > 0]
-
-            return candles if candles else None
-
+                
         return None
 
     def fetch_ticker(self, symbol):
-        """Fetches latest price from CryptoCompare."""
-        base = _to_cc_symbol(symbol)
+        """Fetches latest price from MEXC."""
         try:
-            resp = requests.get("https://min-api.cryptocompare.com/data/price",
-                                params={'fsym': base, 'tsyms': 'USDT'}, timeout=5)
+            resp = requests.get(f"{MEXC_BASE}/ticker/price", params={'symbol': symbol}, timeout=5)
             resp.raise_for_status()
-            return float(resp.json().get('USDT', 0))
+            return float(resp.json().get('price', 0))
         except Exception as e:
-            logger.error(f"Error fetching CryptoCompare ticker for {symbol}: {e}")
+            logger.error(f"Error fetching MEXC ticker for {symbol}: {e}")
             return None
