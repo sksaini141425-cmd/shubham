@@ -200,23 +200,31 @@ class SmartMoneyStrategy(BaseStrategy):
             if None in [ema_200, rsi, macd_hist, prev_macd_hist, bb_lower, bb_upper]:
                 continue
                 
-            # --- TIGHTENED SMART MONEY LOGIC ---
-            # LONG SETUP: 
-            # 1. Price is generally above 200 EMA (Uptrend)
-            # 2. Price pulls back AT or BELOW the BB Lower Band
-            # 3. RSI is oversold (< 40)
-            # 4. MACD Histogram has positive momentum (sloping up)
-            if price > ema_200 and price <= bb_lower:
-                if rsi < 40 and (macd_hist > prev_macd_hist):
+            # --- AGGRESSIVE SMART MONEY LOGIC (Relaxed Trend Filter) ---
+            # LONG SETUP:
+            # - Primary: Price > 200 EMA (Uptrend) + Pullback to BB Lower + RSI < 40
+            # - Aggressive: RSI < 30 (Extreme Oversold) + Pullback to BB Lower
+            #   (Allows catching bounces in downtrends)
+            is_uptrend = price > ema_200
+            is_extreme_oversold = rsi < 30
+            is_at_bb_lower = price <= bb_lower
+            is_macd_rising = macd_hist > prev_macd_hist
+
+            if (is_uptrend or is_extreme_oversold) and is_at_bb_lower:
+                if (rsi < 40 if is_uptrend else is_extreme_oversold) and is_macd_rising:
                     d['signal'] = 'LONG'
-                    
+
             # SHORT SETUP:
-            # 1. Price is generally below 200 EMA (Downtrend)
-            # 2. Price rallies AT or ABOVE the BB Upper Band
-            # 3. RSI is overbought (> 60)
-            # 4. MACD Histogram has negative momentum (sloping down)
-            elif price < ema_200 and price >= bb_upper:
-                if rsi > 60 and (macd_hist < prev_macd_hist):
+            # - Primary: Price < 200 EMA (Downtrend) + Rally to BB Upper + RSI > 60
+            # - Aggressive: RSI > 70 (Extreme Overbought) + Rally to BB Upper
+            #   (Allows catching reversals in uptrends)
+            is_downtrend = price < ema_200
+            is_extreme_overbought = rsi > 70
+            is_at_bb_upper = price >= bb_upper
+            is_macd_falling = macd_hist < prev_macd_hist
+
+            elif (is_downtrend or is_extreme_overbought) and is_at_bb_upper:
+                if (rsi > 60 if is_downtrend else is_extreme_overbought) and is_macd_falling:
                     d['signal'] = 'SHORT'
                     
         return data_list
