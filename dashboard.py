@@ -137,18 +137,17 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 .badge.scanning { background:rgba(79,142,247,.12); color:var(--blue); }
 .badge.neutral,.badge.none { background:rgba(90,112,153,.12); color:var(--muted); }
 
-/* Modal with Full TradingView Widget */
-.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.8);
-    z-index:1000; align-items:center; justify-content:center; }
-.modal-overlay.open { display:flex; }
-.modal { background:var(--card); border:1px solid var(--border); border-radius:16px;
-    width:95vw; max-width:1100px; max-height:92vh; overflow-y:auto; padding:20px; }
+/* Sidebar Chart Pane instead of Modal */
+.main-wrapper { display: flex; gap: 20px; align-items: flex-start; }
+.left-pane { flex: 1; min-width: 0; }
+.right-pane { width: 35%; min-width: 420px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 18px; position: sticky; top: 90px; display: none; max-height: calc(100vh - 110px); overflow-y: auto; }
+.right-pane.open { display: block; }
 .modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; }
 .modal-title { font-size:1.2rem; font-weight:700; }
 .close-btn { width:32px; height:32px; border-radius:50%; background:var(--card2);
     border:1px solid var(--border); cursor:pointer; font-size:1.1rem; display:flex; align-items:center; justify-content:center; }
 .close-btn:hover { background:var(--red); color:white; border-color:var(--red); }
-.modal-chart { width:100%; height:450px; border-radius:10px; overflow:hidden; }
+.modal-chart { width:100%; height:380px; border-radius:10px; overflow:hidden; }
 .indicator-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:14px 0; }
 .ind-card { background:var(--card2); border:1px solid var(--border); border-radius:10px; padding:12px; }
 .ind-label { font-size:0.65rem; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; margin-bottom:5px; }
@@ -201,20 +200,15 @@ tr:hover td { background:rgba(79,142,247,.04); }
 
     <!-- View Controls -->
     <div class="view-bar">
-        <button class="view-btn active" id="btn-charts" onclick="setView('charts')">📊 Charts</button>
-        <button class="view-btn" id="btn-table" onclick="setView('table')">📋 Market Table</button>
+        <button class="view-btn active" id="btn-table" onclick="setView('table')">📋 Market Table</button>
         <button class="view-btn" id="btn-active" onclick="setView('active')">🔥 Active Trades</button>
         <button class="view-btn" id="btn-history" onclick="setView('history')">📂 Trade History</button>
-        <label style="font-size:0.85rem; display:flex; align-items:center; gap:8px; cursor:pointer;" id="toggle-charts-wrap">
-            <input type="checkbox" id="toggle-mini" onchange="toggleMiniCharts()"> Show Mini Charts
-        </label>
-        <input class="search-inp" id="search" placeholder="🔍 Search symbol..." oninput="renderSymbols()">
+        <input class="search-inp" id="search" placeholder="🔍 Search symbol..." oninput="if(state.view==='table')renderTable()">
     </div>
 
-    <!-- Charts View -->
-    <div id="view-charts">
-        <div class="symbol-grid" id="sym-grid"></div>
-    </div>
+    <!-- MAIN WRAPPER FOR SIDE-BY-SIDE -->
+    <div class="main-wrapper">
+        <div class="left-pane">
 
     <!-- Market Table View -->
     <div id="view-table" style="display:none">
@@ -259,10 +253,10 @@ tr:hover td { background:rgba(79,142,247,.04); }
             </div>
         </div>
     </div>
-</div>
+</div> <!-- END left-pane -->
 
-<!-- Chart Modal -->
-<div class="modal-overlay" id="modal" onclick="closeModal(event)">
+<!-- Sidebar Chart Pane -->
+<div class="right-pane" id="modal">
     <div class="modal">
         <div class="modal-header">
             <div class="modal-title" id="modal-title">BTCUSDT</div>
@@ -281,12 +275,14 @@ tr:hover td { background:rgba(79,142,247,.04); }
             • <strong>Trailing SL</strong> — Moves to break-even at 0.5% profit, then locks 50% profit at 1.5%
         </div>
     </div>
-</div>
+</div> <!-- END right-pane -->
+</div> <!-- END main-wrapper -->
+</div> <!-- END container -->
 
 <div class="footer">ProfitBot Pro — Smart Money Edition 🛡️ | EMA200 + BB + RSI + MACD + ATR | Auto-refreshes every 10s</div>
 
 <script>
-let state = {syms:{}, trades:[], view:'charts', showMini:false};
+let state = {syms:{}, trades:[], view:'table', showMini:false};
 let miniCharts = {};
 let modalChart = null;
 let currentSym = null;
@@ -395,13 +391,10 @@ function toggleMiniCharts() {
 
 function setView(v) {
     state.view = v;
-    document.getElementById('view-charts').style.display = v==='charts' ? '' : 'none';
     document.getElementById('view-table').style.display = v==='table' ? '' : 'none';
     document.getElementById('view-active').style.display = v==='active' ? '' : 'none';
     document.getElementById('view-history').style.display = v==='history' ? '' : 'none';
-    document.getElementById('toggle-charts-wrap').style.display = v==='charts' ? 'flex' : 'none';
     
-    document.getElementById('btn-charts').className = 'view-btn' + (v==='charts'?' active':'');
     document.getElementById('btn-table').className = 'view-btn' + (v==='table'?' active':'');
     document.getElementById('btn-active').className = 'view-btn' + (v==='active'?' active':'');
     document.getElementById('btn-history').className = 'view-btn' + (v==='history'?' active':'');
@@ -464,7 +457,6 @@ async function refresh() {
         document.getElementById('s-pnl').textContent = (netPnl>=0?'+$':'-$')+Math.abs(netPnl).toFixed(4);
         document.getElementById('s-pnl').className = 'stat-value '+(netPnl>=0?'green':'red');
 
-        if (state.view === 'charts') renderSymbols();
         if (state.view === 'table') renderTable();
         if (state.view === 'active') renderActiveTrades();
         if (state.view === 'history') renderHistory();
@@ -667,7 +659,9 @@ function updateModal(sym, quiet=false) {
 }
 
 function renderTable() {
-    const rows = Object.entries(state.syms).map(([sym, s]) => {
+    const q = document.getElementById('search') ? document.getElementById('search').value.toUpperCase() : '';
+    const syms = Object.entries(state.syms).filter(([s]) => s.includes(q));
+    const rows = syms.map(([sym, s]) => {
         const inPos = s.direction && s.direction !== 'FLAT';
         const sig = s.signal || 'SCANNING';
         const sigClass = sig === 'LONG' ? 'buy' : sig === 'SHORT' ? 'sell' : 'neutral';
@@ -747,7 +741,7 @@ function renderHistory() {
 }
 
 function closeModal(e) {
-    if (!e || e.target === document.getElementById('modal') || e.target.classList.contains('close-btn')) {
+    if (!e || e.target.classList.contains('close-btn')) {
         document.getElementById('modal').classList.remove('open');
         currentSym = null;
         if (modalChart) modalChart = null;
