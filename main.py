@@ -9,7 +9,7 @@ import threading
 import os
 from bot.data_loader import DataLoader
 from bot.strategy import SmartMoneyStrategy
-from bot.paper_exchange import PaperExchange
+from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
 from bot.ai_brain import AIBrain
 from dashboard import run_dashboard, dashboard_state
@@ -360,6 +360,7 @@ def run_paper_trading():
     data_loader = DataLoader(exchange_id='binanceusdm', testnet=TESTNET)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     ai_brain = AIBrain(GEMINI_API_KEY)
+    global_account = PaperAccount(initial_capital=INITIAL_CAPITAL)
 
     # 1. Fetch top symbols dynamically
     logger.info("Fetching top Binance Futures symbols by volume...")
@@ -394,6 +395,7 @@ def run_paper_trading():
     for symbol in symbols:
         strategy = SmartMoneyStrategy(leverage=LEVERAGE)
         exchange = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
+        exchange.shared_account = global_account
         exchange.symbol = symbol
 
         t = threading.Thread(
