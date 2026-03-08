@@ -196,9 +196,12 @@ tr:hover td { background:rgba(79,142,247,.04); }
 
     <!-- View Controls -->
     <div class="view-bar">
-        <button class="view-btn active" onclick="setView('charts')">📊 Charts</button>
-        <button class="view-btn" onclick="setView('table')">📋 Market Table</button>
-        <button class="view-btn" onclick="setView('history')">📂 Trade History</button>
+        <button class="view-btn active" id="btn-charts" onclick="setView('charts')">📊 Charts</button>
+        <button class="view-btn" id="btn-table" onclick="setView('table')">📋 Market Table</button>
+        <button class="view-btn" id="btn-history" onclick="setView('history')">📂 Trade History</button>
+        <label style="font-size:0.85rem; display:flex; align-items:center; gap:8px; cursor:pointer;" id="toggle-charts-wrap">
+            <input type="checkbox" id="toggle-mini" onchange="toggleMiniCharts()"> Show Mini Charts
+        </label>
         <input class="search-inp" id="search" placeholder="🔍 Search symbol..." oninput="renderSymbols()">
     </div>
 
@@ -263,17 +266,27 @@ tr:hover td { background:rgba(79,142,247,.04); }
 <div class="footer">ProfitBot Pro — Smart Money Edition 🛡️ | EMA200 + BB + RSI + MACD + ATR | Auto-refreshes every 10s</div>
 
 <script>
-let state = {syms:{}, trades:[], view:'charts'};
+let state = {syms:{}, trades:[], view:'charts', showMini:false};
 let miniCharts = {};
 let modalChart = null;
 let currentSym = null;
+
+function toggleMiniCharts() {
+    state.showMini = document.getElementById('toggle-mini').checked;
+    renderSymbols();
+}
 
 function setView(v) {
     state.view = v;
     document.getElementById('view-charts').style.display = v==='charts' ? '' : 'none';
     document.getElementById('view-table').style.display = v==='table' ? '' : 'none';
     document.getElementById('view-history').style.display = v==='history' ? '' : 'none';
-    document.querySelectorAll('.view-btn').forEach((b,i)=>b.classList.toggle('active',['charts','table','history'][i]===v));
+    document.getElementById('toggle-charts-wrap').style.display = v==='charts' ? 'flex' : 'none';
+    
+    document.getElementById('btn-charts').className = 'view-btn' + (v==='charts'?' active':'');
+    document.getElementById('btn-table').className = 'view-btn' + (v==='table'?' active':'');
+    document.getElementById('btn-history').className = 'view-btn' + (v==='history'?' active':'');
+    
     if (v==='table') renderTable();
     if (v==='history') renderHistory();
 }
@@ -357,7 +370,7 @@ function renderSymbols() {
                     <div class="card-price" id="price-${sym}">$${(s.price||0).toLocaleString('en',{minimumFractionDigits:2,maximumFractionDigits:6})}</div>
                 </div>
                 <!-- Binance Style Advanced TradingView Widget embedded per card -->
-                <div class="chart-container" id="tv_widget_${sym}"></div>
+                <div class="chart-container" id="tv_widget_${sym}" style="display:${state.showMini?'block':'none'}"></div>
                 <div class="card-footer">
                     <span class="indicator-pill" id="rsi-${sym}">RSI: ${s.rsi ? s.rsi.toFixed(1) : '—'}</span>
                     <span class="indicator-pill" id="macd-${sym}">MACD: ${s.macd_hist ? (s.macd_hist > 0 ? '▲' : '▼') : '—'}</span>
@@ -367,7 +380,9 @@ function renderSymbols() {
             grid.appendChild(card);
 
             // Draw mini advanced chart widget
-            drawMiniChart(sym);
+            if (state.showMini) {
+                drawMiniChart(sym);
+            }
         } else {
             // Update existing card
             card.className = 'symbol-card' + (inPos?' in-position':'');
@@ -382,6 +397,12 @@ function renderSymbols() {
             document.getElementById('macd-'+sym).style.color = getMacdColor(s.macd_hist);
             if (document.getElementById('upnl-'+sym)) {
                 document.getElementById('upnl-'+sym).textContent = (s.upnl||0)>=0?'+$':'-$'+Math.abs(s.upnl||0).toFixed(4);
+            }
+
+            const chartCont = document.getElementById('tv_widget_'+sym);
+            if (chartCont) {
+                chartCont.style.display = state.showMini ? 'block' : 'none';
+                if (state.showMini) drawMiniChart(sym);
             }
         }
     });
