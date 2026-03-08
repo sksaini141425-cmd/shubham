@@ -86,18 +86,32 @@ class DataLoader:
             endpoint = f"{CRYPTOCOMPARE_BASE}/histoday"
             aggregate = 1
 
-        try:
-            resp = requests.get(endpoint, params={
-                'fsym': base,
-                'tsym': 'USDT',
-                'limit': limit,
-                'aggregate': aggregate
-            }, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
+        for attempt in range(3):
+            try:
+                resp = requests.get(endpoint, params={
+                    'fsym': base,
+                    'tsym': 'USDT',
+                    'limit': limit,
+                    'aggregate': aggregate
+                }, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
 
-            if data.get('Response') == 'Error':
-                logger.error(f"CryptoCompare error for {symbol}: {data.get('Message')}")
+                if data.get('Response') == 'Error':
+                    msg = data.get('Message', '')
+                    if 'rate limit' in msg.lower() and attempt < 2:
+                        logger.warning(f"CryptoCompare rate limit for {symbol}. Retrying in 3s...")
+                        time.sleep(3)
+                        continue
+                    logger.error(f"CryptoCompare error for {symbol}: {msg}")
+                    return None
+                    
+                break # Success, exit retry loop
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                logger.error(f"Error fetching {symbol} from CryptoCompare: {e}")
                 return None
 
             raw = data.get('Data', {}).get('Data', [])

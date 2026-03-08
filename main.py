@@ -390,6 +390,7 @@ def run_paper_trading():
 
     # 5. Create one strategy + exchange per symbol and start threads
     symbol_threads = []
+    logger.info(f"Starting scanners for {len(symbols)} symbols. Staggering startup to prevent rate limits...")
     for symbol in symbols:
         strategy = SmartMoneyStrategy(leverage=LEVERAGE)
         exchange = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
@@ -404,7 +405,9 @@ def run_paper_trading():
         t.start()
         symbol_threads.append(t)
         logger.info(f"[{symbol}] Scanner thread launched.")
-        time.sleep(0.3)  # Stagger starts to avoid API rate limits
+        time.sleep(1.5)  # Stagger starts to avoid API rate limits
+
+    logger.info("All scanners running. ProfitBot Pro is LIVE.")
 
     # 6. Main thread: update dashboard state from symbol_states
     logger.info("All scanners running. Updating dashboard...")
