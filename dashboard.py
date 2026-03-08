@@ -242,7 +242,10 @@ tr:hover td { background:rgba(79,142,247,.04); }
     <!-- History View -->
     <div id="view-history" style="display:none">
         <div class="section">
-            <div class="section-hdr"><span>📋 Trade History</span><span id="hist-count" style="color:var(--muted);font-size:0.8rem"></span></div>
+            <div class="section-hdr">
+                <span>📋 Trade History <button onclick="clearHistory()" style="background:var(--red); border:none; color:white; padding:4px 8px; border-radius:4px; font-size:0.7rem; cursor:pointer; margin-left: 10px;">Clear</button></span>
+                <span id="hist-count" style="color:var(--muted);font-size:0.8rem"></span>
+            </div>
             <div style="overflow-x:auto">
             <table><thead><tr>
                 <th>#</th><th>Time</th><th>Symbol</th><th>Action</th>
@@ -299,6 +302,16 @@ async function requestManualClose(sym) {
         refresh();
     } catch(e) {
         alert('Error requesting close');
+    }
+}
+
+async function clearHistory() {
+    if(!confirm('Are you sure you want to clear all trade history?')) return;
+    try {
+        await fetch('/api/clear_history', {method: 'POST'});
+        refresh();
+    } catch(e) {
+        alert('Error clearing history');
     }
 }
 
@@ -724,7 +737,7 @@ function renderHistory() {
         const pnlCls = t.pnl > 0 ? 'pnl-pos' : t.pnl < 0 ? 'pnl-neg' : '';
         const entryP = isClose && t.entry_price ? '$'+t.entry_price.toFixed(4) : (t.price ? '$'+t.price.toFixed(4) : '—');
         const exitP = isClose && t.price ? '$'+t.price.toFixed(4) : '—';
-        return `<tr>
+        return `<tr onclick="openModal('${t.symbol}')" style="cursor:pointer">
             <td class="muted">${recent.length-i}</td>
             <td class="muted">${t.timestamp||'—'}</td>
             <td><strong>${t.symbol||'—'}</strong></td>
@@ -800,6 +813,17 @@ def update_state():
 def close_trade(symbol):
     manual_close_requests.add(symbol)
     return jsonify({"ok": True, "msg": f"Requested close for {symbol}"})
+
+@app.route('/api/clear_history', methods=['POST'])
+def clear_history():
+    if os.path.exists(TRADE_LOG_FILE):
+        try:
+            with open(TRADE_LOG_FILE, "w") as f:
+                json.dump([], f)
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)})
+    # Update trades in active state memory if tracked, but the front-end fetch will just pick up the empty list on next refresh.
+    return jsonify({"ok": True})
 
 def run_dashboard(host="0.0.0.0", port=None):
     if port is None:
