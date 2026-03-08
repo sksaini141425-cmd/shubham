@@ -200,23 +200,23 @@ class SmartMoneyStrategy(BaseStrategy):
             if None in [ema_200, rsi, macd_hist, prev_macd_hist, bb_lower, bb_upper]:
                 continue
                 
-            # --- SMART MONEY CONTINUATION LOGIC ---
+            # --- LOOSENED SMART MONEY LOGIC ---
             # LONG SETUP: 
             # 1. Price is generally above 200 EMA (Uptrend)
-            # 2. Price touches or goes slightly below BB Lower Band (Pullback)
-            # 3. RSI is recovering from oversold (< 45) but not overbought (< 70)
-            # 4. MACD Histogram is crossing up (Momentum shift to bullish)
-            if price > ema_200 and price <= (bb_lower * 1.002): # Pulled back to bottom band
-                if rsi < 45 and (macd_hist > prev_macd_hist): 
+            # 2. Price pulls back near/below the BB Lower Band (0.4% margin)
+            # 3. RSI is below 50 (resetting momentum)
+            # 4. MACD Histogram is starting to slope up
+            if price > ema_200 and price <= (bb_lower * 1.004): 
+                if rsi < 50 and (macd_hist > prev_macd_hist): 
                     d['signal'] = 'LONG'
                     
             # SHORT SETUP:
             # 1. Price is generally below 200 EMA (Downtrend)
-            # 2. Price touches or goes slightly above BB Upper Band (Fake rally)
-            # 3. RSI is rejecting from overbought (> 55) but not oversold (> 30)
-            # 4. MACD Histogram is crossing down (Momentum shift to bearish)
-            elif price < ema_200 and price >= (bb_upper * 0.998): # Rallied to top band
-                if rsi > 55 and (macd_hist < prev_macd_hist):
+            # 2. Price rallies near/above the BB Upper Band (0.4% margin)
+            # 3. RSI is above 50 (resetting momentum)
+            # 4. MACD Histogram is starting to slope down
+            elif price < ema_200 and price >= (bb_upper * 0.996): 
+                if rsi > 50 and (macd_hist < prev_macd_hist):
                     d['signal'] = 'SHORT'
                     
         return data_list
