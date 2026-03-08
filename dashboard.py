@@ -198,6 +198,7 @@ tr:hover td { background:rgba(79,142,247,.04); }
     <div class="view-bar">
         <button class="view-btn active" id="btn-charts" onclick="setView('charts')">📊 Charts</button>
         <button class="view-btn" id="btn-table" onclick="setView('table')">📋 Market Table</button>
+        <button class="view-btn" id="btn-active" onclick="setView('active')">🔥 Active Trades</button>
         <button class="view-btn" id="btn-history" onclick="setView('history')">📂 Trade History</button>
         <label style="font-size:0.85rem; display:flex; align-items:center; gap:8px; cursor:pointer;" id="toggle-charts-wrap">
             <input type="checkbox" id="toggle-mini" onchange="toggleMiniCharts()"> Show Mini Charts
@@ -221,6 +222,20 @@ tr:hover td { background:rgba(79,142,247,.04); }
                 <th>BB Upper</th><th>BB Lower</th><th>Entry</th><th>TP</th><th>SL</th><th>uPnL</th>
             </tr></thead>
             <tbody id="mkt-tbody"></tbody></table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Trades View -->
+    <div id="view-active" style="display:none">
+        <div class="section">
+            <div class="section-hdr"><span>🔥 Live Positions</span><span id="act-count" style="color:var(--muted);font-size:0.8rem"></span></div>
+            <div style="overflow-x:auto">
+            <table><thead><tr>
+                <th>Symbol</th><th>Direction</th><th>Entry Price</th><th>Current Price</th>
+                <th>Take Profit 🟢</th><th>Stop Loss 🔴</th><th>Live uPnL</th>
+            </tr></thead>
+            <tbody id="act-tbody"></tbody></table>
             </div>
         </div>
     </div>
@@ -280,14 +295,17 @@ function setView(v) {
     state.view = v;
     document.getElementById('view-charts').style.display = v==='charts' ? '' : 'none';
     document.getElementById('view-table').style.display = v==='table' ? '' : 'none';
+    document.getElementById('view-active').style.display = v==='active' ? '' : 'none';
     document.getElementById('view-history').style.display = v==='history' ? '' : 'none';
     document.getElementById('toggle-charts-wrap').style.display = v==='charts' ? 'flex' : 'none';
     
     document.getElementById('btn-charts').className = 'view-btn' + (v==='charts'?' active':'');
     document.getElementById('btn-table').className = 'view-btn' + (v==='table'?' active':'');
+    document.getElementById('btn-active').className = 'view-btn' + (v==='active'?' active':'');
     document.getElementById('btn-history').className = 'view-btn' + (v==='history'?' active':'');
     
     if (v==='table') renderTable();
+    if (v==='active') renderActiveTrades();
     if (v==='history') renderHistory();
 }
 
@@ -335,6 +353,7 @@ async function refresh() {
 
         if (state.view === 'charts') renderSymbols();
         if (state.view === 'table') renderTable();
+        if (state.view === 'active') renderActiveTrades();
         if (state.view === 'history') renderHistory();
         if (currentSym && state.syms[currentSym]) updateModal(currentSym);
     } catch(e) {
@@ -545,6 +564,30 @@ function renderTable() {
     });
     document.getElementById('mkt-tbody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="14" class="empty">Loading market data...</td></tr>';
     document.getElementById('mkt-count').textContent = rows.length + ' markets';
+}
+
+function renderActiveTrades() {
+    const activeSys = Object.entries(state.syms).filter(([sym, s]) => s.direction && s.direction !== 'FLAT');
+    document.getElementById('act-count').textContent = activeSys.length + ' active trades';
+    
+    if (!activeSys.length) {
+        document.getElementById('act-tbody').innerHTML = '<tr><td colspan="7" class="empty">No active trades right now. Bot is scanning the market for entries...</td></tr>';
+        return;
+    }
+    
+    const rows = activeSys.map(([sym, s]) => {
+        return `<tr onclick="openModal('${sym}')" style="cursor:pointer; background:rgba(79,142,247,.08)">
+            <td><strong>${sym}</strong></td>
+            <td><span class="badge ${s.direction.toLowerCase()}">${s.direction}</span></td>
+            <td>$${(s.entry||0).toLocaleString('en',{minimumFractionDigits:4})}</td>
+            <td style="color:var(--blue)">$${(s.price||0).toLocaleString('en',{minimumFractionDigits:4})}</td>
+            <td class="green">${s.tp_price ? '$'+s.tp_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</td>
+            <td class="red">${s.sl_price ? '$'+s.sl_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</td>
+            <td class="${s.upnl>=0?'pnl-pos':'pnl-neg'}" style="font-size:1.1rem">${s.upnl>=0?'+$':'-$'}${Math.abs(s.upnl).toFixed(4)}</td>
+        </tr>`;
+    });
+    
+    document.getElementById('act-tbody').innerHTML = rows.join('');
 }
 
 function renderHistory() {
