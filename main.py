@@ -34,7 +34,7 @@ TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '15'))
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
 DASHBOARD_PORT = int(os.environ.get('PORT', '5000'))  # Render sets PORT automatically
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
-MAX_CONCURRENT_TRADES = int(os.environ.get('MAX_CONCURRENT_TRADES', '3'))  # Max open positions at once
+MAX_CONCURRENT_TRADES = int(os.environ.get('MAX_CONCURRENT_TRADES', '1'))  # Max open positions at once
 MAX_TRADE_HOLD_MINUTES = int(os.environ.get('MAX_TRADE_HOLD_MINUTES', '180'))  # Auto-close after N minutes
 TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.05'))  # 5% hard take-profit
 # -------------------------------------------------------------------------
