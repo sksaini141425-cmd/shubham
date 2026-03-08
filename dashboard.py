@@ -6,6 +6,7 @@ from flask import Flask, jsonify, render_template_string
 import json
 import os
 import time
+import requests
 
 app = Flask(__name__)
 
@@ -17,6 +18,42 @@ dashboard_state = {
 }
 
 TRADE_LOG_FILE = "trade_log.json"
+
+TOP_SYMBOLS = [
+    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+    'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
+    'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
+    'AAVEUSDT', 'NEARUSDT', 'ARBUSDT', 'APTUSDT', 'OPUSDT'
+]
+
+def _fetch_live_prices():
+    """Fetch live prices from CryptoCompare for all top symbols."""
+    try:
+        syms_cc = [s.replace('USDT','') for s in TOP_SYMBOLS]
+        resp = requests.get(
+            'https://min-api.cryptocompare.com/data/pricemulti',
+            params={'fsyms': ','.join(syms_cc), 'tsyms': 'USDT'},
+            timeout=8
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            result = {}
+            for sym, cc_sym in zip(TOP_SYMBOLS, syms_cc):
+                price = data.get(cc_sym, {}).get('USDT', 0)
+                state = dashboard_state.get('symbols', {}).get(sym, {})
+                result[sym] = {
+                    'price': price,
+                    'signal': state.get('signal', 'SCANNING'),
+                    'direction': state.get('direction', 'FLAT'),
+                    'entry': state.get('entry', 0),
+                    'upnl': state.get('upnl', 0),
+                    'min_notional': state.get('min_notional', 5.0),
+                    'fee_pct': state.get('fee_pct', '0.050%')
+                }
+            return result
+    except Exception as e:
+        pass
+    return dashboard_state.get('symbols', {})
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -353,10 +390,15 @@ def api_state():
         except:
             trades = []
 
+    # Use live prices from CryptoCompare if scanner threads haven't populated state yet
+    symbols = dashboard_state.get("symbols", {})
+    if not symbols:
+        symbols = _fetch_live_prices()
+
     return jsonify({
-        "bot_status": dashboard_state.get("bot_status", "RUNNING"),
+        "bot_status": dashboard_state.get("bot_status", "RUNNING 🟢"),
         "last_update": dashboard_state.get("last_update", ""),
-        "symbols": dashboard_state.get("symbols", {}),
+        "symbols": symbols,
         "trades": trades
     })
 
