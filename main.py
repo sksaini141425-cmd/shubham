@@ -94,6 +94,21 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
             upnl_net = upnl_gross - close_fee
 
             # Update dashboard state
+            last_candle = data_list[-1]
+            
+            # Compute TP/SL levels if in position
+            sl_price = None
+            tp_price = None
+            if exchange.is_in_position:
+                with symbol_states_lock:
+                    tsl_pct = symbol_states.get(symbol, {}).get('trailing_sl_pct', -0.02)
+                if exchange.position_direction == 'LONG':
+                    sl_price = round(exchange.entry_price * (1 + tsl_pct), 6)
+                    tp_price = round(exchange.entry_price * 1.03, 6)  # 3% TP target
+                elif exchange.position_direction == 'SHORT':
+                    sl_price = round(exchange.entry_price * (1 - tsl_pct), 6)
+                    tp_price = round(exchange.entry_price * 0.97, 6)
+            
             with symbol_states_lock:
                 symbol_states[symbol] = {
                     "price": round(current_price, 6),
@@ -102,7 +117,26 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     "entry": round(exchange.entry_price, 6) if exchange.is_in_position else 0,
                     "upnl": round(upnl_net, 6),
                     "min_notional": min_notional,
-                    "fee_pct": f"{taker_fee*100:.3f}%"
+                    "fee_pct": f"{taker_fee*100:.3f}%",
+                    # Indicator values
+                    "rsi": round(last_candle.get('RSI', 0) or 0, 2),
+                    "macd": round(last_candle.get('MACD', 0) or 0, 6),
+                    "macd_signal": round(last_candle.get('MACD_Signal', 0) or 0, 6),
+                    "macd_hist": round(last_candle.get('MACD_Hist', 0) or 0, 6),
+                    "ema200": round(last_candle.get('EMA_200', 0) or 0, 6),
+                    "atr": round(last_candle.get('ATR', 0) or 0, 6),
+                    "bb_upper": round(last_candle.get('BB_Upper', 0) or 0, 6),
+                    "bb_middle": round(last_candle.get('BB_Middle', 0) or 0, 6),
+                    "bb_lower": round(last_candle.get('BB_Lower', 0) or 0, 6),
+                    # TP/SL
+                    "sl_price": sl_price,
+                    "tp_price": tp_price,
+                    # Recent candles for charting (last 60)
+                    "candles": [{
+                        "t": c['timestamp'],
+                        "o": c['open'], "h": c['high'],
+                        "l": c['low'],  "c": c['close']
+                    } for c in data_list[-60:]]
                 }
 
             # 4. Manage open position
