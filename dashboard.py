@@ -587,7 +587,7 @@ function updateModal(sym, quiet=false) {
             "width": "100%",
             "height": "450",
             "symbol": tvSymbol,
-            "interval": "1",
+            "interval": "5",
             "timezone": "Etc/UTC",
             "theme": "dark",
             "style": "1",
