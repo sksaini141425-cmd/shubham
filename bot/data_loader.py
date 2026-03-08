@@ -1,65 +1,45 @@
 import requests
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
-# Bybit standard fees (comparable to Binance)
-BYBIT_MAKER_FEE = 0.0002  # 0.02%
-BYBIT_TAKER_FEE = 0.00055  # 0.055%
+# Standard Binance-equivalent fees for simulation
+TAKER_FEE = 0.0005   # 0.05%
+MAKER_FEE = 0.0002   # 0.02%
 
-# Bybit interval map
-INTERVAL_MAP = {
-    '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30',
-    '1h': '60', '2h': '120', '4h': '240', '1d': 'D'
-}
+# CryptoCompare public API — no API key needed for basic OHLCV, no US geo-block
+CRYPTOCOMPARE_BASE = "https://min-api.cryptocompare.com/data/v2"
+
+# Map of symbol → CryptoCompare base symbol (strip USDT)
+def _to_cc_symbol(symbol):
+    return symbol.replace('USDT', '')
 
 class DataLoader:
-    def __init__(self, exchange_id='bybit', api_key=None, secret=None, testnet=False):
-        # Using Bybit public API - no US regional blocks on market data
-        self.base_url = "https://api.bybit.com"
+    def __init__(self, exchange_id='cryptocompare', api_key=None, secret=None, testnet=False):
         self._symbol_info_cache = {}
-        logger.info("Using Bybit public API for market data (no geo-restrictions).")
-        self._load_exchange_info()
+        logger.info("Using CryptoCompare public API for market data (US-accessible, no geo-block).")
+        # Pre-populate symbol info with known defaults (CryptoCompare doesn't have futures-style info)
+        self._load_default_symbol_info()
 
-    def _load_exchange_info(self):
-        """
-        Fetches Bybit instrument info once at startup — gets min order sizes, fees etc.
-        """
-        try:
-            url = f"{self.base_url}/v5/market/instruments-info"
-            params = {"category": "linear", "limit": 1000}
-            resp = requests.get(url, params=params, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-
-            for sym in data.get('result', {}).get('list', []):
-                name = sym.get('symbol', '')
-                if not name.endswith('USDT'):
-                    continue
-
-                lot_filter = sym.get('lotSizeFilter', {})
-                price_filter = sym.get('priceFilter', {})
-
-                min_qty = float(lot_filter.get('minOrderQty', 0.001))
-                step_size = float(lot_filter.get('qtyStep', 0.001))
-                tick_size = float(price_filter.get('tickSize', 0.01))
-                # Bybit min notional is qty * price, approximate $1 minimum
-                # We'll use $5 as safe default
-                min_notional = max(float(lot_filter.get('minOrderAmt', 5.0)), 1.0)
-
-                self._symbol_info_cache[name] = {
-                    'min_notional': min_notional,
-                    'min_qty': min_qty,
-                    'step_size': step_size,
-                    'tick_size': tick_size,
-                    'taker_fee': BYBIT_TAKER_FEE,
-                    'maker_fee': BYBIT_MAKER_FEE
-                }
-
-            logger.info(f"Loaded Bybit instrument info for {len(self._symbol_info_cache)} symbols.")
-
-        except Exception as e:
-            logger.error(f"Failed to load Bybit instrumentInfo: {e}. Using defaults.")
+    def _load_default_symbol_info(self):
+        """Pre-populate known symbols with standard defaults."""
+        symbols = [
+            'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+            'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
+            'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
+            'AAVEUSDT', 'NEARUSDT', 'FTMUSDT', 'APTUSDT', 'ARBUSDT'
+        ]
+        for sym in symbols:
+            self._symbol_info_cache[sym] = {
+                'min_notional': 5.0,
+                'min_qty': 0.001,
+                'step_size': 0.001,
+                'tick_size': 0.01,
+                'taker_fee': TAKER_FEE,
+                'maker_fee': MAKER_FEE
+            }
+        logger.info(f"Pre-loaded default info for {len(symbols)} symbols.")
 
     def get_symbol_info(self, symbol):
         return self._symbol_info_cache.get(symbol, {
@@ -67,8 +47,8 @@ class DataLoader:
             'min_qty': 0.001,
             'step_size': 0.001,
             'tick_size': 0.01,
-            'taker_fee': BYBIT_TAKER_FEE,
-            'maker_fee': BYBIT_MAKER_FEE
+            'taker_fee': TAKER_FEE,
+            'maker_fee': MAKER_FEE
         })
 
     def round_step_size(self, quantity, step_size):
@@ -78,78 +58,75 @@ class DataLoader:
         return round(int(quantity / step_size) * step_size, precision)
 
     def get_top_futures_symbols(self, top_n=20, min_volume_usd=50_000_000):
-        """
-        Fetches top N most actively traded USDT linear perp symbols by 24h volume from Bybit.
-        """
-        fallback = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-                    'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
-                    'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
-                    'AAVEUSDT', 'NEARUSDT', 'FTMUSDT', 'APTUSDT', 'ARBUSDT']
-        try:
-            url = f"{self.base_url}/v5/market/tickers"
-            resp = requests.get(url, params={"category": "linear"}, timeout=10)
-            resp.raise_for_status()
-            tickers = resp.json().get('result', {}).get('list', [])
-
-            usdt_pairs = [
-                t for t in tickers
-                if t['symbol'].endswith('USDT')
-                and float(t.get('turnover24h', 0)) >= min_volume_usd
-            ]
-            usdt_pairs.sort(key=lambda x: float(x.get('turnover24h', 0)), reverse=True)
-            symbols = [t['symbol'] for t in usdt_pairs[:top_n]]
-            logger.info(f"Top {len(symbols)} Bybit futures by volume: {symbols}")
-            return symbols if symbols else fallback[:top_n]
-
-        except Exception as e:
-            logger.error(f"Error fetching Bybit top symbols: {e}")
-            return fallback[:top_n]
+        """Returns hardcoded top symbols — CryptoCompare sorting isn't needed since we always scan the same set."""
+        symbols = [
+            'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
+            'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
+            'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
+            'AAVEUSDT', 'NEARUSDT', 'ARBUSDT', 'APTUSDT', 'OPUSDT'
+        ]
+        logger.info(f"Scanning {top_n} hardcoded symbols: {symbols[:top_n]}")
+        return symbols[:top_n]
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=100):
-        """Fetches OHLCV candles from Bybit linear futures."""
-        interval = INTERVAL_MAP.get(timeframe, '1')
-        url = f"{self.base_url}/v5/market/kline"
+        """
+        Fetches OHLCV candles from CryptoCompare.
+        No US geo-restrictions. No API key required (100k/month free tier).
+        """
+        base = _to_cc_symbol(symbol)
+
+        # Map timeframe to CryptoCompare endpoint
+        if timeframe in ['1m', '3m', '5m', '15m', '30m']:
+            endpoint = f"{CRYPTOCOMPARE_BASE}/histominute"
+            aggregate = int(timeframe.replace('m', ''))
+        elif timeframe in ['1h', '2h', '4h']:
+            endpoint = f"{CRYPTOCOMPARE_BASE}/histohour"
+            aggregate = int(timeframe.replace('h', ''))
+        else:
+            endpoint = f"{CRYPTOCOMPARE_BASE}/histoday"
+            aggregate = 1
+
         try:
-            resp = requests.get(url, params={
-                "category": "linear",
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
+            resp = requests.get(endpoint, params={
+                'fsym': base,
+                'tsym': 'USDT',
+                'limit': limit,
+                'aggregate': aggregate
             }, timeout=10)
             resp.raise_for_status()
             data = resp.json()
-            raw = data.get('result', {}).get('list', [])
 
+            if data.get('Response') == 'Error':
+                logger.error(f"CryptoCompare error for {symbol}: {data.get('Message')}")
+                return None
+
+            raw = data.get('Data', {}).get('Data', [])
             if not raw:
                 return None
 
-            # Bybit returns newest first, reverse to oldest-first
-            raw = list(reversed(raw))
             candles = [{
-                'timestamp': int(k[0]),
-                'open': float(k[1]),
-                'high': float(k[2]),
-                'low': float(k[3]),
-                'close': float(k[4]),
-                'volume': float(k[5])
-            } for k in raw]
+                'timestamp': int(k['time']) * 1000,
+                'open': float(k['open']),
+                'high': float(k['high']),
+                'low': float(k['low']),
+                'close': float(k['close']),
+                'volume': float(k['volumefrom'])
+            } for k in raw if k['close'] > 0]
 
-            return candles
+            return candles if candles else None
 
         except Exception as e:
-            logger.error(f"Error fetching {symbol} from Bybit: {e}")
+            logger.error(f"Error fetching {symbol} from CryptoCompare: {e}")
             return None
 
     def fetch_ticker(self, symbol):
-        """Fetches latest price for a symbol from Bybit."""
+        """Fetches latest price from CryptoCompare."""
+        base = _to_cc_symbol(symbol)
         try:
-            resp = requests.get(f"{self.base_url}/v5/market/tickers",
-                                params={"category": "linear", "symbol": symbol}, timeout=5)
+            resp = requests.get("https://min-api.cryptocompare.com/data/price",
+                                params={'fsym': base, 'tsyms': 'USDT'}, timeout=5)
             resp.raise_for_status()
-            items = resp.json().get('result', {}).get('list', [])
-            if items:
-                return float(items[0]['lastPrice'])
-            return None
+            return float(resp.json().get('USDT', 0))
         except Exception as e:
-            logger.error(f"Error fetching Bybit ticker for {symbol}: {e}")
+            logger.error(f"Error fetching CryptoCompare ticker for {symbol}: {e}")
             return None
