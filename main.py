@@ -13,7 +13,7 @@ from bot.strategy import SmartMoneyStrategy
 from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
 from bot.ai_brain import AIBrain
-from dashboard import run_dashboard, dashboard_state
+from dashboard import run_dashboard, dashboard_state, manual_close_requests
 
 # Setup Logging
 logging.basicConfig(
@@ -123,6 +123,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     "signal": latest_signal,
                     "direction": exchange.position_direction or "FLAT",
                     "entry": round(exchange.entry_price, 6) if exchange.is_in_position else 0,
+                    "size": exchange.position_size if exchange.is_in_position else 0,
                     "upnl": round(upnl_net, 6),
                     "min_notional": min_notional,
                     "fee_pct": f"{taker_fee*100:.3f}%",
@@ -184,6 +185,13 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
                 close_position = False
                 close_reason = ""
+                
+                # --- MANUAL EXIT ---
+                if symbol in manual_close_requests:
+                    close_position = True
+                    close_reason = "Manual Exit via Dashboard 🖱️"
+                    logger.info(f"[{symbol}] {close_reason}")
+                    manual_close_requests.remove(symbol)
                 
                 # --- HARD TAKE-PROFIT ---
                 if upnl_pct >= TAKE_PROFIT_PCT:

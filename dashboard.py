@@ -15,6 +15,8 @@ dashboard_state = {
     "symbols": {}
 }
 
+manual_close_requests = set()
+
 TRADE_LOG_FILE = "trade_log.json"
 
 TOP_SYMBOLS = [
@@ -153,6 +155,8 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 .ind-value { font-size:1.1rem; font-weight:600; }
 .trade-info { background:var(--card2); border:1px solid var(--border); border-radius:10px; padding:14px; margin-top:12px; }
 .trade-row { display:flex; justify-content:space-between; font-size:0.82rem; margin:6px 0; }
+.close-manual-btn { margin-top:14px; width:100%; padding:12px; background:var(--red); color:white; border:none; border-radius:10px; font-weight:700; cursor:pointer; font-size:1rem; transition:background 0.2s; }
+.close-manual-btn:hover { background:#d43f5a; }
 .strategy-box { background:#0a1428; border:1px solid var(--border); border-radius:10px; padding:14px; margin-top:12px; font-size:0.8rem; color:var(--muted); line-height:1.8; }
 .strategy-box strong { color:var(--text); }
 
@@ -287,6 +291,103 @@ let miniCharts = {};
 let modalChart = null;
 let currentSym = null;
 
+let ws = null;
+let subscribedSyms = new Set();
+
+async function requestManualClose(sym) {
+    if(!confirm('Are you sure you want to close ' + sym + ' manually?')) return;
+    try {
+        await fetch('/api/close_trade/' + sym, {method: 'POST'});
+        alert('Close requested for ' + sym);
+        closeModal();
+        refresh();
+    } catch(e) {
+        alert('Error requesting close');
+    }
+}
+
+function updateWsSubscriptions() {
+    const active = Object.keys(state.syms).filter(sym => state.syms[sym].direction && state.syms[sym].direction !== 'FLAT');
+    const toSub = active.filter(sym => !subscribedSyms.has(sym));
+    const toUnsub = [...subscribedSyms].filter(sym => !active.includes(sym));
+    
+    if (toSub.length === 0 && toUnsub.length === 0) return;
+    
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        if (active.length > 0) initWS(active);
+        return;
+    }
+    
+    if (toSub.length > 0) {
+        ws.send(JSON.stringify({method: "SUBSCRIBE", params: toSub.map(s => s.toLowerCase() + '@ticker'), id: 1}));
+        toSub.forEach(s => subscribedSyms.add(s));
+    }
+    if (toUnsub.length > 0) {
+        ws.send(JSON.stringify({method: "UNSUBSCRIBE", params: toUnsub.map(s => s.toLowerCase() + '@ticker'), id: 2}));
+        toUnsub.forEach(s => subscribedSyms.delete(s));
+    }
+}
+
+function initWS(initialSyms) {
+    ws = new WebSocket('wss://fstream.binance.com/ws');
+    ws.onopen = () => {
+        subscribedSyms = new Set(initialSyms);
+        ws.send(JSON.stringify({method: "SUBSCRIBE", params: initialSyms.map(s => s.toLowerCase() + '@ticker'), id: 1}));
+    };
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.e === '24hrTicker') {
+            onLivePrice(msg.s, parseFloat(msg.c));
+        }
+    };
+    ws.onclose = () => { ws = null; subscribedSyms.clear(); };
+}
+
+function onLivePrice(sym, price) {
+    if (!state.syms[sym]) return;
+    const s = state.syms[sym];
+    s.price = price;
+    
+    if (s.direction && s.direction !== 'FLAT') {
+        let rawPnl = 0;
+        if (s.direction === 'LONG') rawPnl = (price - s.entry) * (s.size || 0);
+        if (s.direction === 'SHORT') rawPnl = (s.entry - price) * (s.size || 0);
+        
+        const fee_pct = parseFloat(s.fee_pct) / 100 || 0.0005;
+        const close_fee = (s.size || 0) * price * fee_pct;
+        s.upnl = rawPnl - close_fee;
+        
+        // Update DOM directly for high performance (every tick)
+        updateLiveDom(sym, s, price);
+    }
+}
+
+function updateLiveDom(sym, s, price) {
+    const actRow = document.getElementById('act-row-'+sym);
+    if (actRow) {
+        const priceTd = actRow.querySelector('.live-price');
+        const pnlTd = actRow.querySelector('.live-pnl');
+        if (priceTd) priceTd.innerHTML = '$' + price.toLocaleString('en',{minimumFractionDigits:4});
+        if (pnlTd) {
+            pnlTd.className = 'live-pnl ' + (s.upnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+            pnlTd.innerHTML = (s.upnl >= 0 ? '+$' : '-$') + Math.abs(s.upnl).toFixed(6);
+        }
+    }
+    
+    if (currentSym === sym) {
+        const tradeEl = document.getElementById('modal-trade');
+        if (tradeEl) {
+            const priceSpan = document.getElementById('modal-live-price');
+            const pnlSpan = document.getElementById('modal-live-pnl');
+            if (priceSpan) priceSpan.innerHTML = '$' + price.toLocaleString('en',{minimumFractionDigits:4});
+            if (pnlSpan) {
+                pnlSpan.className = 'modal-live-pnl ' + (s.upnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+                pnlSpan.innerHTML = (s.upnl >= 0 ? '+$' : '-$') + Math.abs(s.upnl).toFixed(6);
+            }
+        }
+    }
+}
+
 function toggleMiniCharts() {
     state.showMini = document.getElementById('toggle-mini').checked;
     renderSymbols();
@@ -367,7 +468,10 @@ async function refresh() {
         if (state.view === 'table') renderTable();
         if (state.view === 'active') renderActiveTrades();
         if (state.view === 'history') renderHistory();
-        if (currentSym && state.syms[currentSym]) updateModal(currentSym);
+        if (currentSym && state.syms[currentSym]) updateModal(currentSym, true); // true = update quietly
+        
+        updateWsSubscriptions();
+        
     } catch(e) {
         document.getElementById('last-upd').textContent = 'Connection error...';
     }
@@ -465,40 +569,42 @@ function openModal(sym) {
     currentSym = sym;
     document.getElementById('modal').classList.add('open');
     document.getElementById('modal-title').textContent = sym;
-    updateModal(sym);
+    updateModal(sym, false);
 }
 
-function updateModal(sym) {
+function updateModal(sym, quiet=false) {
     const s = state.syms[sym];
     if (!s) return;
-    const el = document.getElementById('modal-chart');
-    el.innerHTML = '';
     
-    // Mount full-featured advanced Binance-style TradingView widget
-    const tvSymbol = "BINANCE:" + sym;
-    modalChart = new TradingView.widget({
-        "container_id": "modal-chart",
-        "width": "100%",
-        "height": "450",
-        "symbol": tvSymbol,
-        "interval": "1",
-        "timezone": "Etc/UTC",
-        "theme": "dark",
-        "style": "1",
-        "locale": "en",
-        "enable_publishing": false,
-        "hide_top_toolbar": false,
-        "hide_legend": false,
-        "save_image": false,
-        "toolbar_bg": "#0a1428",
-        // Pre-load the exact indicators the bot uses!
-        "studies": [
-            "MACD@tv-basicstudies",      // MACD (12, 26, 9)
-            "RSI@tv-basicstudies",       // RSI (14)
-            "BB@tv-basicstudies",        // Bollinger Bands (20)
-            "MASimple@tv-basicstudies"   // EMA 200 equivalent (users can configure it)
-        ]
-    });
+    if (!quiet) {
+        const el = document.getElementById('modal-chart');
+        el.innerHTML = '';
+        
+        // Mount full-featured advanced Binance-style TradingView widget
+        const tvSymbol = "BINANCE:" + sym;
+        modalChart = new TradingView.widget({
+            "container_id": "modal-chart",
+            "width": "100%",
+            "height": "450",
+            "symbol": tvSymbol,
+            "interval": "1",
+            "timezone": "Etc/UTC",
+            "theme": "dark",
+            "style": "1",
+            "locale": "en",
+            "enable_publishing": false,
+            "hide_top_toolbar": false,
+            "hide_legend": false,
+            "save_image": false,
+            "toolbar_bg": "#0a1428",
+            "studies": [
+                "MACD@tv-basicstudies",    
+                "RSI@tv-basicstudies",      
+                "BB@tv-basicstudies",        
+                "MASimple@tv-basicstudies"  
+            ]
+        });
+    }
 
     // Indicators Row
     const rsiColor = getRsiColor(s.rsi);
@@ -538,17 +644,25 @@ function updateModal(sym) {
     const tradeEl = document.getElementById('modal-trade');
     if (s.direction && s.direction !== 'FLAT') {
         tradeEl.style.display = '';
-        tradeEl.innerHTML = `
-            <div style="font-weight:700;margin-bottom:10px;color:${s.direction==='LONG'?'var(--green)':'var(--red)'}">
-                🔥 LIVE ${s.direction} POSITION
-            </div>
-            <div class="trade-row"><span>Entry Price</span><span style="color:var(--blue)">$${s.entry.toLocaleString('en',{minimumFractionDigits:4})}</span></div>
-            <div class="trade-row"><span>Current Price</span><span>$${s.price.toLocaleString('en',{minimumFractionDigits:4})}</span></div>
-            <div class="trade-row"><span>Unrealized PnL</span><span class="${s.upnl>=0?'pnl-pos':'pnl-neg'}">${s.upnl>=0?'+$':'-$'}${Math.abs(s.upnl).toFixed(4)}</span></div>
-            <div class="trade-row"><span>Take Profit 🟢</span><span class="green">${s.tp_price ? '$'+s.tp_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</span></div>
-            <div class="trade-row"><span>Stop Loss 🔴</span><span class="red">${s.sl_price ? '$'+s.sl_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</span></div>`;
+        if (!quiet) {
+            tradeEl.innerHTML = `
+                <div style="font-weight:700;margin-bottom:10px;color:${s.direction==='LONG'?'var(--green)':'var(--red)'}; display:flex; justify-content:space-between; align-items:center;">
+                    <span>🔥 LIVE ${s.direction} POSITION</span>
+                    <span style="font-size:0.75rem; color:var(--muted); font-weight:400;">⚡ WebSocket Active</span>
+                </div>
+                <div class="trade-row"><span>Entry Price</span><span style="color:var(--blue)">$${s.entry.toLocaleString('en',{minimumFractionDigits:4})}</span></div>
+                <div class="trade-row"><span>Current Price</span><span id="modal-live-price" class="modal-live-price">$${s.price.toLocaleString('en',{minimumFractionDigits:4})}</span></div>
+                <div class="trade-row"><span>Live Net PnL</span><span id="modal-live-pnl" class="modal-live-pnl ${s.upnl>=0?'pnl-pos':'pnl-neg'}">${s.upnl>=0?'+$':'-$'}${Math.abs(s.upnl).toFixed(6)}</span></div>
+                <div class="trade-row"><span>Take Profit 🟢</span><span class="green">${s.tp_price ? '$'+s.tp_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</span></div>
+                <div class="trade-row"><span>Stop Loss 🔴</span><span class="red">${s.sl_price ? '$'+s.sl_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</span></div>
+                <button onclick="requestManualClose('${sym}')" class="close-manual-btn">🛑 Close Manually Now</button>
+                `;
+        } else {
+             updateLiveDom(sym, s, s.price);
+        }
     } else {
         tradeEl.style.display = 'none';
+        tradeEl.innerHTML = '';
     }
 }
 
@@ -588,14 +702,14 @@ function renderActiveTrades() {
     }
     
     const rows = activeSys.map(([sym, s]) => {
-        return `<tr onclick="openModal('${sym}')" style="cursor:pointer; background:rgba(79,142,247,.08)">
+        return `<tr id="act-row-${sym}" onclick="openModal('${sym}')" style="cursor:pointer; background:rgba(79,142,247,.08)">
             <td><strong>${sym}</strong></td>
             <td><span class="badge ${s.direction.toLowerCase()}">${s.direction}</span></td>
             <td>$${(s.entry||0).toLocaleString('en',{minimumFractionDigits:4})}</td>
-            <td style="color:var(--blue)">$${(s.price||0).toLocaleString('en',{minimumFractionDigits:4})}</td>
+            <td class="live-price" style="color:var(--blue)">$${(s.price||0).toLocaleString('en',{minimumFractionDigits:4})}</td>
             <td class="green">${s.tp_price ? '$'+s.tp_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</td>
             <td class="red">${s.sl_price ? '$'+s.sl_price.toLocaleString('en',{minimumFractionDigits:4}) : '—'}</td>
-            <td class="${s.upnl>=0?'pnl-pos':'pnl-neg'}" style="font-size:1.1rem">${s.upnl>=0?'+$':'-$'}${Math.abs(s.upnl).toFixed(4)}</td>
+            <td class="live-pnl ${s.upnl>=0?'pnl-pos':'pnl-neg'}" style="font-size:1.1rem">${s.upnl>=0?'+$':'-$'}${Math.abs(s.upnl).toFixed(6)}</td>
         </tr>`;
     });
     
@@ -687,6 +801,11 @@ def update_state():
     data = request.json
     dashboard_state.update(data)
     return jsonify({"ok": True})
+
+@app.route('/api/close_trade/<symbol>', methods=['POST'])
+def close_trade(symbol):
+    manual_close_requests.add(symbol)
+    return jsonify({"ok": True, "msg": f"Requested close for {symbol}"})
 
 def run_dashboard(host="0.0.0.0", port=None):
     if port is None:
