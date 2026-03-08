@@ -29,7 +29,7 @@ TESTNET = True
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "2.98"))
 LEVERAGE = int(os.environ.get('LEVERAGE', '45'))
 TIMEFRAME = '1m'
-TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '20'))
+TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '60'))
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '50000000'))
 DASHBOARD_PORT = int(os.environ.get('PORT', '5000'))  # Render sets PORT automatically
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
@@ -250,7 +250,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
 
-        time.sleep(15)  # 15s between checks per symbol to respect rate limits
+        time.sleep(30)  # 30s between checks per symbol to respect rate limits with 60 pairs
 
 
 def telegram_listener(notifier, ai_brain):
@@ -405,7 +405,7 @@ def run_paper_trading():
         t.start()
         symbol_threads.append(t)
         logger.info(f"[{symbol}] Scanner thread launched.")
-        time.sleep(1.5)  # Stagger starts to avoid API rate limits
+        time.sleep(0.5)  # Stagger starts to avoid API rate limits but keep boot fast
 
     logger.info("All scanners running. ProfitBot Pro is LIVE.")
 
