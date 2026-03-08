@@ -14,5 +14,3 @@ services:
         sync: false
       - key: INITIAL_CAPITAL
         value: "2.98"
-      - key: PORT
-        value: "5000"
