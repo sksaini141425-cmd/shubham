@@ -6,6 +6,7 @@ Everything displayed is NET of Binance fees.
 import time
 import logging
 import threading
+from datetime import datetime
 import os
 from bot.data_loader import DataLoader
 from bot.strategy import SmartMoneyStrategy
@@ -28,11 +29,14 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set ONLY in Render Envir
 TESTNET = True
 INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "2.98"))
 LEVERAGE = int(os.environ.get('LEVERAGE', '45'))
-TIMEFRAME = '1m'
-TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '60'))
+TIMEFRAME = '5m'
+TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '15'))
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
 DASHBOARD_PORT = int(os.environ.get('PORT', '5000'))  # Render sets PORT automatically
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
+MAX_CONCURRENT_TRADES = int(os.environ.get('MAX_CONCURRENT_TRADES', '3'))  # Max open positions at once
+MAX_TRADE_HOLD_MINUTES = int(os.environ.get('MAX_TRADE_HOLD_MINUTES', '180'))  # Auto-close after N minutes
+TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.05'))  # 5% hard take-profit
 # -------------------------------------------------------------------------
 
 # Shared bot state
@@ -41,6 +45,10 @@ bot_running = {"value": True}
 # Per-symbol state for dashboard
 symbol_states = {}
 symbol_states_lock = threading.Lock()
+
+# Global concurrent-trade limiter
+active_trades_lock = threading.Lock()
+active_trades = {}  # symbol -> datetime of entry (UTC)
 
 
 def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
@@ -148,8 +156,8 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 current_atr = data_list[-1]['ATR']
                 atr_pct = (current_atr / current_price)
                 
-                # Default Stop Loss: 1.5x ATR, but cap at max 2% Net Loss
-                default_sl_pct = min(-0.02, -(atr_pct * 1.5))
+                # Default Stop Loss: 1.5x ATR, but cap at max 1.5% Net Loss to minimize drawdown
+                default_sl_pct = min(-0.015, -(atr_pct * 1.5))
                 
                 # Fetch dynamically updated trailing SL for this position, or initialize to default SL
                 with symbol_states_lock:
@@ -175,23 +183,45 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     symbol_states[symbol]['trailing_sl_pct'] = sl_pct
 
                 close_position = False
+                close_reason = ""
                 
-                # Hit Dynamic Stop-Loss / Trailing Profit Stop
-                if upnl_pct <= sl_pct:
-                    if sl_pct > 0:
-                        logger.warning(f"[{symbol}] TRAILING PROFIT STOP HIT at {sl_pct*100:.2f}% (NET)")
-                    else:
-                        logger.warning(f"[{symbol}] STOP LOSS HIT at {sl_pct*100:.2f}% (NET)")
+                # --- HARD TAKE-PROFIT ---
+                if upnl_pct >= TAKE_PROFIT_PCT:
                     close_position = True
+                    close_reason = f"TAKE PROFIT HIT at {upnl_pct*100:.2f}% (NET) 🎯"
+                    logger.info(f"[{symbol}] {close_reason}")
 
-                # Trend-Reversal Exit (Emergency Eject)
+                # --- MAX HOLD TIME SAFETY EXIT ---
+                if not close_position:
+                    with active_trades_lock:
+                        entry_time = active_trades.get(symbol)
+                    if entry_time:
+                        hold_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
+                        if hold_minutes >= MAX_TRADE_HOLD_MINUTES:
+                            close_position = True
+                            close_reason = f"MAX HOLD TIME ({MAX_TRADE_HOLD_MINUTES}m) reached ⏰"
+                            logger.warning(f"[{symbol}] {close_reason}")
+
+                # --- HIT DYNAMIC STOP-LOSS / TRAILING PROFIT STOP ---
+                if not close_position and upnl_pct <= sl_pct:
+                    close_position = True
+                    if sl_pct > 0:
+                        close_reason = f"TRAILING PROFIT STOP HIT at {sl_pct*100:.2f}% (NET)"
+                        logger.warning(f"[{symbol}] {close_reason}")
+                    else:
+                        close_reason = f"STOP LOSS HIT at {sl_pct*100:.2f}% (NET)"
+                        logger.warning(f"[{symbol}] {close_reason}")
+
+                # --- TREND-REVERSAL EXIT ---
                 if not close_position:
                     if exchange.position_direction == 'LONG' and latest_signal == 'SHORT':
                         close_position = True
-                        logger.warning(f"[{symbol}] Reversal signal (LONG->SHORT). Closing.")
+                        close_reason = "Reversal signal (LONG->SHORT)"
+                        logger.warning(f"[{symbol}] {close_reason}. Closing.")
                     elif exchange.position_direction == 'SHORT' and latest_signal == 'LONG':
                         close_position = True
-                        logger.warning(f"[{symbol}] Reversal signal (SHORT->LONG). Closing.")
+                        close_reason = "Reversal signal (SHORT->LONG)"
+                        logger.warning(f"[{symbol}] {close_reason}. Closing.")
 
                 if close_position:
                     gross_pnl = exchange.get_unrealized_pnl(current_price)
@@ -203,6 +233,10 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
                     exchange.execute_market_order('CLOSE', exchange.position_size, current_price, latest_time)
 
+                    # Remove from global active trades tracker
+                    with active_trades_lock:
+                        active_trades.pop(symbol, None)
+
                     # Clear trailing state
                     with symbol_states_lock:
                         if 'trailing_sl_pct' in symbol_states[symbol]:
@@ -211,41 +245,48 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     emoji = "✅" if net_pnl > 0 else "❌"
                     msg = (
                         f"{emoji} *{symbol} Trade Closed*\n"
+                        f"Reason: _{close_reason}_\n"
                         f"Entry: `${entry_price:.4f}` → Exit: `${current_price:.4f}`\n"
                         f"Net PnL (after fees): `{'+'if net_pnl>=0 else ''}{net_pnl:.6f} USDT` ({net_pnl_pct:+.2f}%)\n"
-                        f"Balance: `${exchange.cash:.6f} USDT`\n"
+                        f"Realized Balance: `${exchange.cash:.6f} USDT`\n"
                         f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
                     )
                     notifier.send_message(msg)
 
             # 5. Open new position using PER-SYMBOL min_notional
             if not exchange.is_in_position and latest_signal in ['LONG', 'SHORT']:
-                # Use capital leverage to meet THIS symbol's minimum notional
-                target_notional = max(min_notional * 1.05, min_notional + 0.1)  # 5% buffer above minimum
-                req_leverage = target_notional / exchange.cash if exchange.cash > 0 else LEVERAGE
-                actual_leverage = max(LEVERAGE, min(125, int(req_leverage + 1)))
-                strategy.leverage = actual_leverage
+                # ATOMIC CHECK: Only open if we are under the global concurrent-trade limit
+                with active_trades_lock:
+                    if len(active_trades) >= MAX_CONCURRENT_TRADES:
+                        pass  # Too many open trades, skip this signal
+                    else:
+                        # Use capital leverage to meet THIS symbol's minimum notional
+                        target_notional = max(min_notional * 1.05, min_notional + 0.1)  # 5% buffer above minimum
+                        req_leverage = target_notional / exchange.cash if exchange.cash > 0 else LEVERAGE
+                        actual_leverage = max(LEVERAGE, min(125, int(req_leverage + 1)))
+                        strategy.leverage = actual_leverage
 
-                # Round size to valid step size for this symbol
-                raw_size = target_notional / current_price
-                size = data_loader.round_step_size(raw_size, step_size)
-                if size <= 0:
-                    size = info['min_qty']  # fallback to minimum
+                        # Round size to valid step size for this symbol
+                        raw_size = target_notional / current_price
+                        size = data_loader.round_step_size(raw_size, step_size)
+                        if size <= 0:
+                            size = info['min_qty']  # fallback to minimum
 
-                actual_notional = size * current_price
-                open_fee = actual_notional * taker_fee
+                        actual_notional = size * current_price
+                        open_fee = actual_notional * taker_fee
 
-                if exchange.cash * actual_leverage >= actual_notional:
-                    success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
-                    if success:
-                        msg = (
-                            f"🔔 *{symbol} — New {latest_signal}*\n"
-                            f"Entry: `${current_price:.6f}`\n"
-                            f"Notional: `${actual_notional:.2f}` (min: ${min_notional}) at `{actual_leverage}x`\n"
-                            f"Open Fee: `-${open_fee:.6f} USDT` ({taker_fee*100:.3f}%)\n"
-                            f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
-                        )
-                        notifier.send_message(msg)
+                        if exchange.cash * actual_leverage >= actual_notional:
+                            success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
+                            if success:
+                                active_trades[symbol] = datetime.utcnow()  # Register trade in global tracker
+                                msg = (
+                                    f"🔔 *{symbol} — New {latest_signal}* ({len(active_trades)}/{MAX_CONCURRENT_TRADES} slots used)\n"
+                                    f"Entry: `${current_price:.6f}`\n"
+                                    f"Notional: `${actual_notional:.2f}` (min: ${min_notional}) at `{actual_leverage}x`\n"
+                                    f"Open Fee: `-${open_fee:.6f} USDT` ({taker_fee*100:.3f}%)\n"
+                                    f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
+                                )
+                                notifier.send_message(msg)
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
@@ -417,6 +458,19 @@ def run_paper_trading():
         while True:
             with symbol_states_lock:
                 dashboard_state["symbols"] = dict(symbol_states)
+                # Compute total unrealized PnL across ALL open positions for real-time balance
+                total_upnl = sum(
+                    s.get('upnl', 0) for s in symbol_states.values()
+                    if s.get('direction', 'FLAT') != 'FLAT'
+                )
+            with active_trades_lock:
+                open_count = len(active_trades)
+            # Pass live balance (realized cash + unrealized PnL) and trade slot info to dashboard
+            dashboard_state["total_upnl"] = round(total_upnl, 6)
+            dashboard_state["realized_cash"] = round(global_account.get_cash(), 6)
+            dashboard_state["live_balance"] = round(global_account.get_cash() + total_upnl, 6)
+            dashboard_state["open_trade_count"] = open_count
+            dashboard_state["max_trades"] = MAX_CONCURRENT_TRADES
             dashboard_state["bot_status"] = "RUNNING 🟢" if bot_running["value"] else "STOPPED 🛑"
             time.sleep(5)
 

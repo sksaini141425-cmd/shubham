@@ -200,23 +200,23 @@ class SmartMoneyStrategy(BaseStrategy):
             if None in [ema_200, rsi, macd_hist, prev_macd_hist, bb_lower, bb_upper]:
                 continue
                 
-            # --- LOOSENED SMART MONEY LOGIC ---
+            # --- TIGHTENED SMART MONEY LOGIC ---
             # LONG SETUP: 
             # 1. Price is generally above 200 EMA (Uptrend)
-            # 2. Price pulls back near/below the BB Lower Band (0.4% margin)
-            # 3. RSI is below 50 (resetting momentum)
-            # 4. MACD Histogram is starting to slope up
-            if price > ema_200 and price <= (bb_lower * 1.004): 
-                if rsi < 50 and (macd_hist > prev_macd_hist): 
+            # 2. Price pulls back AT or BELOW the BB Lower Band
+            # 3. RSI is oversold (< 40)
+            # 4. MACD Histogram has positive momentum (sloping up)
+            if price > ema_200 and price <= bb_lower:
+                if rsi < 40 and (macd_hist > prev_macd_hist):
                     d['signal'] = 'LONG'
                     
             # SHORT SETUP:
             # 1. Price is generally below 200 EMA (Downtrend)
-            # 2. Price rallies near/above the BB Upper Band (0.4% margin)
-            # 3. RSI is above 50 (resetting momentum)
-            # 4. MACD Histogram is starting to slope down
-            elif price < ema_200 and price >= (bb_upper * 0.996): 
-                if rsi > 50 and (macd_hist < prev_macd_hist):
+            # 2. Price rallies AT or ABOVE the BB Upper Band
+            # 3. RSI is overbought (> 60)
+            # 4. MACD Histogram has negative momentum (sloping down)
+            elif price < ema_200 and price >= bb_upper:
+                if rsi > 60 and (macd_hist < prev_macd_hist):
                     d['signal'] = 'SHORT'
                     
         return data_list

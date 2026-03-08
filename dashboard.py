@@ -186,12 +186,13 @@ tr:hover td { background:rgba(79,142,247,.04); }
 <div class="container">
     <!-- Stats -->
     <div class="stats" id="stats-row">
-        <div class="stat"><div class="stat-label">💰 Balance</div><div class="stat-value blue" id="s-bal">$3.00</div><div class="stat-sub" id="s-bal-chg">Starting: $3.00</div></div>
+        <div class="stat"><div class="stat-label">💰 Live Portfolio</div><div class="stat-value blue" id="s-bal">$3.00</div><div class="stat-sub" id="s-bal-chg">Realized: $3.00</div></div>
+        <div class="stat"><div class="stat-label">📈 Unrealized PnL</div><div class="stat-value" id="s-upnl">+$0.00</div><div class="stat-sub" id="s-upnl-sub">Open positions</div></div>
+        <div class="stat"><div class="stat-label">🔥 Trade Slots</div><div class="stat-value yellow" id="s-open">0/3</div><div class="stat-sub">Max concurrent</div></div>
         <div class="stat"><div class="stat-label">📡 Scanning</div><div class="stat-value blue" id="s-scan">—</div><div class="stat-sub">Markets</div></div>
-        <div class="stat"><div class="stat-label">🔥 Open Positions</div><div class="stat-value yellow" id="s-open">0</div><div class="stat-sub">Live Trades</div></div>
         <div class="stat"><div class="stat-label">📈 Total Trades</div><div class="stat-value" id="s-total">0</div><div class="stat-sub">Paper Mode</div></div>
         <div class="stat"><div class="stat-label">🎯 Win Rate</div><div class="stat-value green" id="s-wr">—</div><div class="stat-sub">Closed Trades</div></div>
-        <div class="stat"><div class="stat-label">💵 Net PnL</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub">After Fees</div></div>
+        <div class="stat"><div class="stat-label">💵 Realized PnL</div><div class="stat-value" id="s-pnl">+$0.00</div><div class="stat-sub">After Fees</div></div>
     </div>
 
     <!-- View Controls -->
@@ -337,15 +338,26 @@ async function refresh() {
         const wins = closed.filter(t => t.pnl > 0);
         const netPnl = closed.reduce((s,t) => s+(t.pnl||0), 0);
         const wr = closed.length > 0 ? ((wins.length/closed.length)*100).toFixed(1) : null;
-        const lastBal = state.trades.length > 0 ? state.trades[state.trades.length-1].balance : 3.0;
-        const balChg = lastBal - 3.0;
-        const openPos = Object.values(state.syms).filter(s => s.direction && s.direction !== 'FLAT');
 
-        document.getElementById('s-bal').textContent = '$'+parseFloat(lastBal).toFixed(4);
-        document.getElementById('s-bal-chg').textContent = (balChg>=0?'▲ +':'▼ ')+'$'+Math.abs(balChg).toFixed(4);
-        document.getElementById('s-bal-chg').className = 'stat-sub '+(balChg>=0?'green':'red');
+        // --- REAL-TIME LIVE BALANCE: Cash + Unrealized PnL ---
+        const STARTING_CAPITAL = 3.0;
+        const liveBal = d.live_balance != null ? d.live_balance : STARTING_CAPITAL;
+        const realizedCash = d.realized_cash != null ? d.realized_cash : STARTING_CAPITAL;
+        const totalUpnl = d.total_upnl != null ? d.total_upnl : 0;
+        const openCount = d.open_trade_count != null ? d.open_trade_count : 0;
+        const maxTrades = d.max_trades != null ? d.max_trades : 3;
+        const liveBalChg = liveBal - STARTING_CAPITAL;
+
+        document.getElementById('s-bal').textContent = '$'+liveBal.toFixed(4);
+        document.getElementById('s-bal-chg').textContent = 'Realized: $'+realizedCash.toFixed(4);
+        document.getElementById('s-bal-chg').className = 'stat-sub '+(liveBal >= STARTING_CAPITAL ? 'green' : 'red');
+
+        document.getElementById('s-upnl').textContent = (totalUpnl>=0?'+$':'-$')+Math.abs(totalUpnl).toFixed(4);
+        document.getElementById('s-upnl').className = 'stat-value '+(totalUpnl>=0?'green':'red');
+        document.getElementById('s-upnl-sub').textContent = openCount + ' open position' + (openCount!==1?'s':'');
+
+        document.getElementById('s-open').textContent = openCount+'/'+maxTrades;
         document.getElementById('s-scan').textContent = Object.keys(state.syms).length;
-        document.getElementById('s-open').textContent = openPos.length;
         document.getElementById('s-total').textContent = state.trades.length;
         document.getElementById('s-wr').textContent = wr ? wr+'%' : '—';
         document.getElementById('s-pnl').textContent = (netPnl>=0?'+$':'-$')+Math.abs(netPnl).toFixed(4);
@@ -661,7 +673,13 @@ def api_state():
         "bot_status": dashboard_state.get("bot_status", "RUNNING 🟢"),
         "last_update": dashboard_state.get("last_update", ""),
         "symbols": symbols,
-        "trades": trades
+        "trades": trades,
+        # Real-time balance fields populated by the main bot loop
+        "live_balance": dashboard_state.get("live_balance"),      # cash + unrealized PnL
+        "realized_cash": dashboard_state.get("realized_cash"),    # closed-trade cash only
+        "total_upnl": dashboard_state.get("total_upnl"),          # sum of all open pos uPnL
+        "open_trade_count": dashboard_state.get("open_trade_count", 0),
+        "max_trades": dashboard_state.get("max_trades", 3),
     })
 
 @app.route('/api/update', methods=['POST'])
