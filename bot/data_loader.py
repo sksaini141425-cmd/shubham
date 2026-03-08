@@ -51,16 +51,43 @@ class DataLoader:
         precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
         return round(int(quantity / step_size) * step_size, precision)
 
-    def get_top_futures_symbols(self, top_n=20, min_volume_usd=50_000_000):
-        # We use a hardcoded safe list for our strategy to ensure we don't scan meme coins
-        symbols = [
-            'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-            'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
-            'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
-            'AAVEUSDT', 'NEARUSDT', 'ARBUSDT', 'APTUSDT', 'OPUSDT'
-        ]
-        logger.info(f"Scanning {top_n} symbols: {symbols[:top_n]}")
-        return symbols[:top_n]
+    def get_top_futures_symbols(self, top_n=60, min_volume_usd=50_000_000):
+        """Dynamically fetches the highest volume USDT pairs from MEXC."""
+        try:
+            resp = requests.get(f"{MEXC_BASE}/ticker/24hr", timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            # Filter for USDT pairs and sort by quote volume (USD value)
+            valid_pairs = []
+            for item in data:
+                if not item['symbol'].endswith('USDT'):
+                    continue
+                    
+                # Exclude leveraged tokens or weird pairs (usually contain numbers or down/up)
+                if 'UPUSDT' in item['symbol'] or 'DOWNUSDT' in item['symbol'] or 'BEAR' in item['symbol'] or 'BULL' in item['symbol']:
+                    continue
+                    
+                vol = float(item.get('quoteVolume', 0))
+                if vol >= min_volume_usd:
+                    valid_pairs.append({'symbol': item['symbol'], 'vol': vol})
+            
+            # Sort by volume descending
+            valid_pairs.sort(key=lambda x: x['vol'], reverse=True)
+            
+            # Extract just the symbol names
+            symbols = [p['symbol'] for p in valid_pairs[:top_n]]
+            
+            # Fallback if API fails to return enough pairs
+            if not symbols:
+                symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT']
+                
+            logger.info(f"Dynamically fetched top {len(symbols)} highest-volume USDT pairs.")
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"Error fetching top symbols dynamically: {e}")
+            return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT']
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=100):
         """
