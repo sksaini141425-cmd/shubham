@@ -10,14 +10,10 @@ BINANCE_TAKER_FEE = 0.0005  # 0.05%
 
 class DataLoader:
     def __init__(self, exchange_id='binanceusdm', api_key=None, secret=None, testnet=True):
-        # fapi.binance.com often blocks US IPs (like Render's servers). 
-        # We can try alternative endpoints or the testnet to avoid 451 errors.
-        if testnet:
-            self.base_url = "https://testnet.binancefuture.com"
-            logger.info("Using Binance Testnet to avoid regional blocks.")
-        else:
-            self.base_url = "https://fapi.binance.com"
-            logger.info("Using Binance Mainnet (Note: May block US IPs like Render).")
+        # Always use mainnet for market DATA - public endpoints are not IP-blocked.
+        # We only do paper trading (no real orders), so testnet is not needed.
+        self.base_url = "https://fapi.binance.com"
+        logger.info("Using Binance Mainnet public API for market data.")
         # Cache of per-symbol rules: {symbol: {min_notional, min_qty, step_size, ...}}
         self._symbol_info_cache = {}
         logger.info(f"Initialized native {exchange_id} data loader.")
