@@ -223,7 +223,7 @@ class SmartMoneyStrategy(BaseStrategy):
             is_at_bb_upper = price >= bb_upper
             is_macd_falling = macd_hist < prev_macd_hist
 
-            elif (is_downtrend or is_extreme_overbought) and is_at_bb_upper:
+            if (is_downtrend or is_extreme_overbought) and is_at_bb_upper:
                 if (rsi > 60 if is_downtrend else is_extreme_overbought) and is_macd_falling:
                     d['signal'] = 'SHORT'
                     
