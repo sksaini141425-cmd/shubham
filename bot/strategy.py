@@ -179,52 +179,39 @@ class SmartMoneyStrategy(BaseStrategy):
         return data_list
 
     def generate_signals(self, data_list):
-        lookback = 200 # Need 200 EMA to be valid
-        if len(data_list) < lookback:
+        if len(data_list) < 20: # Minimal BB warmup
             return data_list
             
         for i in range(1, len(data_list)):
             d = data_list[i]
             prev_d = data_list[i-1]
             price = d['close']
-            ema_200 = d.get('EMA_200')
             rsi = d.get('RSI')
             macd_hist = d.get('MACD_Hist')
             prev_macd_hist = prev_d.get('MACD_Hist')
-            bb_lower = d.get('BB_Lower')
-            bb_upper = d.get('BB_Upper')
             
             d['signal'] = 'NONE'
             
-            # Require all indicators to be warmed up
-            if None in [ema_200, rsi, macd_hist, prev_macd_hist, bb_lower, bb_upper]:
+            if None in [rsi, macd_hist, prev_macd_hist]:
                 continue
                 
-            # --- AGGRESSIVE SMART MONEY LOGIC (Relaxed Trend Filter) ---
-            # LONG SETUP:
-            # - Primary: Price > 200 EMA (Uptrend) + Pullback to BB Lower + RSI < 40
-            # - Aggressive: RSI < 30 (Extreme Oversold) + Pullback to BB Lower
-            #   (Allows catching bounces in downtrends)
-            is_uptrend = price > ema_200
-            is_extreme_oversold = rsi < 30
-            is_at_bb_lower = price <= bb_lower
+            # --- SAFE TREND-FOLLOWING SCALPER ---
+            ema200 = d.get('EMA_200')
+            if not ema200: continue # Need EMA200 for trend
+
+            is_uptrend = price > ema200
+            is_downtrend = price < ema200
+
+            is_oversold = rsi < 40
+            is_overbought = rsi > 60
+            
             is_macd_rising = macd_hist > prev_macd_hist
-
-            if (is_uptrend or is_extreme_oversold) and is_at_bb_lower:
-                if (rsi < 40 if is_uptrend else is_extreme_oversold) and is_macd_rising:
-                    d['signal'] = 'LONG'
-
-            # SHORT SETUP:
-            # - Primary: Price < 200 EMA (Downtrend) + Rally to BB Upper + RSI > 60
-            # - Aggressive: RSI > 70 (Extreme Overbought) + Rally to BB Upper
-            #   (Allows catching reversals in uptrends)
-            is_downtrend = price < ema_200
-            is_extreme_overbought = rsi > 70
-            is_at_bb_upper = price >= bb_upper
             is_macd_falling = macd_hist < prev_macd_hist
 
-            if (is_downtrend or is_extreme_overbought) and is_at_bb_upper:
-                if (rsi > 60 if is_downtrend else is_extreme_overbought) and is_macd_falling:
-                    d['signal'] = 'SHORT'
+            # Require trend alignment, strict RSI, and momentum confirmation
+            if is_uptrend and is_oversold and is_macd_rising:
+                d['signal'] = 'LONG'
+            elif is_downtrend and is_overbought and is_macd_falling:
+                d['signal'] = 'SHORT'
                     
         return data_list

@@ -11,14 +11,18 @@ app = Flask(__name__)
 
 dashboard_state = {
     "bot_status": "STARTING",
+    "entries_allowed": True,
     "last_update": "",
-    "symbols": {}
+    "symbols": {},
+    "profile_name": "default",
+    "log_file": "trade_log.json"
 }
 
 manual_close_requests = set()
+set_entries_state = [None]  # None = no request, True = enable, False = disable
 clear_history_requested = [False]
-
-TRADE_LOG_FILE = "trade_log.json"
+panic_close_all_requested = [False]
+reset_account_requested = [False]
 
 TOP_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
@@ -73,7 +77,7 @@ HTML_TEMPLATE = """
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ProfitBot Pro — Advanced TradingView Dashboard</title>
+<title id="page-title">ProfitBot Pro</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <style>
@@ -171,18 +175,36 @@ tr:hover td { background:rgba(79,142,247,.04); }
 .pnl-pos{color:var(--green);font-weight:600} .pnl-neg{color:var(--red);font-weight:600}
 .act-open{color:var(--blue);font-weight:600} .act-close{color:var(--yellow);font-weight:600}
 .empty { padding:40px; text-align:center; color:var(--muted); font-size:0.85rem; }
+/* High-Contrast Premium Switch: ON(Left-Blue), OFF(Right-Red) */
+.switch-wrapper { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 16px; min-width: 100px; }
+.switch-label-under { font-size: 0.7rem; color: #fff; font-weight: 900; text-transform: uppercase; letter-spacing: 0.15em; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+.switch { position: relative; display: inline-block; width: 72px; height: 32px; cursor: pointer; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ff3b3b; transition: .4s cubic-bezier(0.4, 0, 0.2, 1); border-radius: 34px; box-shadow: inset 0 2px 5px rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1); }
+.slider:before { position: absolute; content: "OFF"; font-size: 0.65rem; font-weight: 900; color: white; height: 24px; width: 34px; left: 34px; bottom: 3px; background: rgba(0,0,0,0.4); transition: .4s cubic-bezier(0.4, 0, 0.2, 1); border-radius: 20px; display: flex; align-items: center; justify-content: center; }
+input:checked + .slider { background-color: #4f8ef7; }
+input:checked + .slider:before { transform: translateX(-31px); content: "ON"; background: #fff; color: #4f8ef7; box-shadow: 0 0 15px #4f8ef7; }
 .footer { text-align:center; color:var(--muted); font-size:0.7rem; padding:20px; border-top:1px solid var(--border); margin-top:20px; }
 </style>
 </head>
 <body>
 
 <div class="header">
-    <div class="logo">🤖 ProfitBot Pro</div>
+    <div class="logo">🤖 ProfitBot Pro <span id="profile-badge" style="background:var(--blue); color:white; font-size:0.7rem; padding:3px 8px; border-radius:6px; vertical-align:middle; margin-left:10px; font-weight:800; text-transform:uppercase; box-shadow:0 0 10px rgba(79,142,247,0.3);">LOADING...</span></div>
     <div style="display:flex;align-items:center;gap:12px">
         <span style="font-size:0.75rem;color:var(--muted)" id="last-upd">Connecting...</span>
         <div class="status-pill">
             <div class="dot green"></div>
             <span id="bot-status">LIVE</span>
+        </div>
+        <button onclick="closeAllTrades()" style="background:#ff3b3b;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:bold;font-size:0.75rem;">🔴 CLOSE ALL</button>
+        <button onclick="resetAccount()" style="background:#ff9800;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:bold;font-size:0.75rem;">♻️ RESET BAL</button>
+        <div class="switch-wrapper">
+            <label class="switch">
+                <input type="checkbox" id="entry-toggle-input" onchange="toggleEntries()">
+                <span class="slider"></span>
+            </label>
+            <span class="switch-label-under">New Trades</span>
         </div>
     </div>
 </div>
@@ -190,9 +212,9 @@ tr:hover td { background:rgba(79,142,247,.04); }
 <div class="container">
     <!-- Stats -->
     <div class="stats" id="stats-row">
-        <div class="stat"><div class="stat-label">💰 Live Portfolio</div><div class="stat-value blue" id="s-bal">$3.00</div><div class="stat-sub" id="s-bal-chg">Realized: $3.00</div></div>
+        <div class="stat"><div class="stat-label">💰 Live Portfolio</div><div class="stat-value blue" id="s-bal">—</div><div class="stat-sub" id="s-bal-chg">Realized: —</div></div>
         <div class="stat"><div class="stat-label">📈 Unrealized PnL</div><div class="stat-value" id="s-upnl">+$0.00</div><div class="stat-sub" id="s-upnl-sub">Open positions</div></div>
-        <div class="stat"><div class="stat-label">🔥 Trade Slots</div><div class="stat-value yellow" id="s-open">0/3</div><div class="stat-sub">Max concurrent</div></div>
+        <div class="stat"><div class="stat-label">🔥 Trade Slots</div><div class="stat-value yellow" id="s-open">0/—</div><div class="stat-sub">Max concurrent</div></div>
         <div class="stat"><div class="stat-label">📡 Scanning</div><div class="stat-value blue" id="s-scan">—</div><div class="stat-sub">Markets</div></div>
         <div class="stat"><div class="stat-label">📈 Total Trades</div><div class="stat-value" id="s-total">0</div><div class="stat-sub">Paper Mode</div></div>
         <div class="stat"><div class="stat-label">🎯 Win Rate</div><div class="stat-value green" id="s-wr">—</div><div class="stat-sub">Closed Trades</div></div>
@@ -306,6 +328,17 @@ async function requestManualClose(sym) {
     }
 }
 
+let lastToggleTime = 0;
+async function toggleEntries() {
+    const isChecked = document.getElementById('entry-toggle-input').checked;
+    lastToggleTime = Date.now();
+    try {
+        await fetch(`/api/set_entries?enabled=${isChecked}`, {method: 'POST'});
+    } catch(e) {
+        alert('Error setting entries');
+    }
+}
+
 async function clearHistory() {
     if(!confirm('Are you sure you want to clear all trade history?')) return;
     try {
@@ -384,6 +417,13 @@ function updateLiveDom(sym, s, price) {
         }
     }
     
+    // Update uPnL in History Table if row exists
+    const histPnlCell = document.getElementById('hist-pnl-' + sym);
+    if (histPnlCell) {
+        histPnlCell.className = (s.upnl >= 0 ? 'pnl-pos' : 'pnl-neg');
+        histPnlCell.innerHTML = (s.upnl >= 0 ? '+$' : '-$') + Math.abs(s.upnl).toFixed(4);
+    }
+    
     if (currentSym === sym) {
         const tradeEl = document.getElementById('modal-trade');
         if (tradeEl) {
@@ -441,6 +481,20 @@ async function refresh() {
 
         document.getElementById('last-upd').textContent = 'Updated: ' + new Date().toLocaleTimeString();
         document.getElementById('bot-status').textContent = d.bot_status || 'RUNNING';
+        if (d.profile_name) {
+            const badge = document.getElementById('profile-badge');
+            badge.textContent = d.profile_name.replace('_', ' ');
+            document.getElementById('page-title').textContent = d.profile_name.toUpperCase() + ' — ProfitBot';
+        }
+        
+        const entryToggle = document.getElementById('entry-toggle-input');
+        if (entryToggle) {
+            // Ignore server state for 2.5 seconds after a manual toggle to prevent "auto-flipping"
+            if (Date.now() - lastToggleTime > 2500) {
+                const isAllowed = d.entries_allowed !== false;
+                if (entryToggle.checked !== isAllowed) entryToggle.checked = isAllowed;
+            }
+        }
 
         const closed = state.trades.filter(t => t.action && t.action.startsWith('CLOSE'));
         const wins = closed.filter(t => t.pnl > 0);
@@ -448,7 +502,7 @@ async function refresh() {
         const wr = closed.length > 0 ? ((wins.length/closed.length)*100).toFixed(1) : null;
 
         // --- REAL-TIME LIVE BALANCE: Cash + Unrealized PnL ---
-        const STARTING_CAPITAL = 3.0;
+        const STARTING_CAPITAL = d.initial_capital != null ? d.initial_capital : 3.0;
         const liveBal = d.live_balance != null ? d.live_balance : STARTING_CAPITAL;
         const realizedCash = d.realized_cash != null ? d.realized_cash : STARTING_CAPITAL;
         const totalUpnl = d.total_upnl != null ? d.total_upnl : 0;
@@ -587,7 +641,22 @@ function updateModal(sym, quiet=false) {
         el.innerHTML = '';
         
         // Mount full-featured advanced Binance-style TradingView widget
-        const tvSymbol = "BINANCE:" + sym;
+        // Binance uses weird names for Gold pegged assets. 
+        // TradingView uses the Spot equivalents without the .P for these.
+        let tvSymbol = "";
+        const tvMap = {
+            "GOLD(PAXG)USDT": "BINANCE:PAXGUSDT", 
+            "GOLD(XAUT)USDT": "BINANCE:XAUTUSDT"  
+        };
+        
+        if (tvMap[sym]) {
+            tvSymbol = tvMap[sym];
+        } else {
+            // General fallback: remove parenthetical text
+            let cleanSym = sym.replace(/\([^)]*\)/g, '');
+            tvSymbol = "BINANCE:" + cleanSym;
+        }
+        
         modalChart = new TradingView.widget({
             "container_id": "modal-chart",
             "width": "100%",
@@ -747,7 +816,7 @@ function renderHistory() {
             <td class="muted">${t.size?t.size.toFixed(4):'—'}</td>
             <td>$${(t.notional||0).toFixed(2)}</td>
             <td class="muted">-$${(t.fee||0).toFixed(4)}</td>
-            <td class="${pnlCls}">${pnlStr}</td>
+            <td id="${!isClose ? 'hist-pnl-'+t.symbol : ''}" class="${pnlCls}">${pnlStr}</td>
             <td class="muted">$${(t.balance_before||0).toFixed(4)}</td>
             <td class="${isClose&&t.pnl>0?'pnl-pos':isClose&&t.pnl<0?'pnl-neg':''}">$${(t.balance||0).toFixed(4)}</td>
         </tr>`;
@@ -759,6 +828,22 @@ function closeModal(e) {
         document.getElementById('modal').classList.remove('open');
         currentSym = null;
         if (modalChart) modalChart = null;
+    }
+}
+
+function closeAllTrades() {
+    if(confirm("🚨 Are you sure you want to close ALL active trades immediately?")) {
+        fetch('/api/close_all', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => alert(data.msg || "Requested close all"));
+    }
+}
+
+function resetAccount() {
+    if(confirm("♻️ Are you sure you want to WIPE history and reset balance to starting capital?")) {
+        fetch('/api/reset_account', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => alert(data.msg || "Account reset requested"));
     }
 }
 
@@ -780,9 +865,10 @@ def ping():
 @app.route('/api/state')
 def api_state():
     trades = []
-    if os.path.exists(TRADE_LOG_FILE):
+    log_file = dashboard_state.get("log_file", "trade_log.json")
+    if os.path.exists(log_file):
         try:
-            with open(TRADE_LOG_FILE, "r") as f:
+            with open(log_file, "r") as f:
                 trades = json.load(f)
         except:
             trades = []
@@ -794,6 +880,7 @@ def api_state():
     return jsonify({
         "bot_status": dashboard_state.get("bot_status", "RUNNING 🟢"),
         "last_update": dashboard_state.get("last_update", ""),
+        "profile_name": dashboard_state.get("profile_name", "default"),
         "symbols": symbols,
         "trades": trades,
         # Real-time balance fields populated by the main bot loop
@@ -802,6 +889,8 @@ def api_state():
         "total_upnl": dashboard_state.get("total_upnl"),          # sum of all open pos uPnL
         "open_trade_count": dashboard_state.get("open_trade_count", 0),
         "max_trades": dashboard_state.get("max_trades", 3),
+        "initial_capital": dashboard_state.get("initial_capital", 10.0),
+        "entries_allowed": dashboard_state.get("entries_allowed", True),
     })
 
 @app.route('/api/update', methods=['POST'])
@@ -815,20 +904,41 @@ def close_trade(symbol):
     manual_close_requests.add(symbol)
     return jsonify({"ok": True, "msg": f"Requested close for {symbol}"})
 
+@app.route('/api/close_all', methods=['POST'])
+def close_all():
+    panic_close_all_requested[0] = True
+    return jsonify({"ok": True, "msg": "Panic close all requested. Trades will close shortly."})
+
+@app.route('/api/reset_account', methods=['POST'])
+def reset_account():
+    reset_account_requested[0] = True
+    return jsonify({"ok": True, "msg": "Account reset requested! Wiping history and setting balance to $10.00."})
+
+@app.route('/api/set_entries', methods=['POST'])
+def set_entries():
+    enabled = request.args.get('enabled', 'true').lower() == 'true'
+    set_entries_state[0] = enabled
+    return jsonify({"ok": True})
+
 @app.route('/api/clear_history', methods=['POST'])
 def clear_history():
     clear_history_requested[0] = True
-    if os.path.exists(TRADE_LOG_FILE):
+    log_file = dashboard_state.get("log_file", "trade_log.json")
+    if os.path.exists(log_file):
         try:
-            with open(TRADE_LOG_FILE, "w") as f:
+            with open(log_file, "w") as f:
                 json.dump([], f)
         except Exception as e:
             return jsonify({"ok": False, "error": str(e)})
     return jsonify({"ok": True})
 
-def run_dashboard(host="0.0.0.0", port=None):
+def run_dashboard(host="0.0.0.0", port=None, log_file=None, profile_name=None):
     if port is None:
         port = int(os.environ.get('PORT', 5000))
+    if log_file:
+        dashboard_state["log_file"] = log_file
+    if profile_name:
+        dashboard_state["profile_name"] = profile_name
     import logging
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)

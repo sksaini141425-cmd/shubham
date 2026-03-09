@@ -13,7 +13,25 @@ from bot.strategy import SmartMoneyStrategy
 from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
 from bot.ai_brain import AIBrain
-from dashboard import run_dashboard, dashboard_state, manual_close_requests, clear_history_requested
+from dashboard import run_dashboard, dashboard_state, manual_close_requests, clear_history_requested, set_entries_state, panic_close_all_requested, reset_account_requested
+import json
+import argparse
+
+# --- CLI ARGUMENTS ---
+parser = argparse.ArgumentParser(description="ProfitBot Pro")
+parser.add_argument("--profile", type=str, default="default", help="Profile name for this bot instance")
+parser.add_argument("--port", type=int, default=int(os.environ.get('PORT', '5000')), help="Port for the dashboard")
+parser.add_argument("--capital", type=float, default=None, help="Initial capital for this profile")
+args = parser.parse_args()
+
+PROFILE = args.profile if args.profile != "default" else os.getenv("BOT_PROFILE", "default")
+DASHBOARD_PORT = args.port
+STATE_FILE = f"bot_state_{PROFILE}.json" if PROFILE != "default" else "bot_state.json"
+TRADE_LOG_FILE = f"trade_log_{PROFILE}.json" if PROFILE != "default" else "trade_log.json"
+
+# Update dashboard initial capital early
+dashboard_state["initial_capital"] = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
+dashboard_state["max_trades"] = 5 # Default for optimized logic
 
 # Setup Logging
 logging.basicConfig(
@@ -27,20 +45,22 @@ TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8774183137:AAF2O1EFz_
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '8506152391')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set ONLY in Render Environment Variables, NEVER hardcode here!
 TESTNET = True
-INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", "2.98"))
+# Priority: CLI Arg > Env Var > Default ($10.00)
+INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
 LEVERAGE = int(os.environ.get('LEVERAGE', '45'))
 TIMEFRAME = '5m'
 TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '60'))
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
-DASHBOARD_PORT = int(os.environ.get('PORT', '5000'))  # Render sets PORT automatically
+# DASHBOARD_PORT handled by argparse above
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
-MAX_CONCURRENT_TRADES = 4  # Max 4 open positions at once
-MAX_TRADE_HOLD_MINUTES = int(os.environ.get('MAX_TRADE_HOLD_MINUTES', '180'))  # Auto-close after N minutes
-TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.05'))  # 5% hard take-profit
+MAX_CONCURRENT_TRADES = 5  # Reduced to 5 for better capital allocation on small accounts
+MAX_TRADE_HOLD_MINUTES = int(os.environ.get('MAX_TRADE_HOLD_MINUTES', '180'))
+TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.03'))  # Increased to 3.0% TP
 # -------------------------------------------------------------------------
 
 # Shared bot state
 bot_running = {"value": True}
+allow_new_trades = {"value": True}
 
 # Per-symbol state for dashboard
 symbol_states = {}
@@ -49,6 +69,60 @@ symbol_states_lock = threading.Lock()
 # Global concurrent-trade limiter
 active_trades_lock = threading.Lock()
 active_trades = {}  # symbol -> datetime of entry (UTC)
+
+def save_bot_state():
+    try:
+        with open(STATE_FILE, "w") as f:
+            json.dump({"allow_new_trades": allow_new_trades["value"]}, f)
+    except Exception as e:
+        logger.error(f"Failed to save bot state: {e}")
+
+def load_bot_state():
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                data = json.load(f)
+                allow_new_trades["value"] = data.get("allow_new_trades", True)
+                logger.info(f"Loaded bot state: allow_new_trades={allow_new_trades['value']}")
+        except Exception as e:
+            logger.error(f"Failed to load bot state: {e}")
+
+def safe_send_message(notifier, text):
+    """Wrapped notifier call to prevent network/timeout errors from crashing threads."""
+    try:
+        notifier.send_message(text)
+    except Exception as e:
+        logger.error(f"Telegram Notification Error: {e}")
+
+def sync_active_trades(global_account, max_concurrent):
+    """
+    On startup, reconstruct the active_trades list from the trade log.
+    If a trade was OPENED but not CLOSED in the log, we assume it's active.
+    """
+    with active_trades_lock:
+        active_trades.clear()
+        # Find unmatched 'OPEN' actions in the log
+        # Action names in PaperExchange are 'LONG', 'SHORT' for open and 'CLOSE (LONG/SHORT)' for close
+        open_signals = {} # symbol -> entry_time
+        for trade in global_account.trade_history:
+            action = trade.get('action', '')
+            symbol = trade.get('symbol')
+            if action in ['LONG', 'SHORT']:
+                open_signals[symbol] = trade.get('timestamp')
+            elif action.startswith('CLOSE'):
+                if symbol in open_signals:
+                    del open_signals[symbol]
+        
+        for symbol, t_str in open_signals.items():
+            try:
+                # Approximate entry time if possible
+                t_dt = datetime.fromisoformat(t_str) if t_str else datetime.utcnow()
+                active_trades[symbol] = t_dt
+            except:
+                active_trades[symbol] = datetime.utcnow()
+        
+        if active_trades:
+            logger.info(f"Synced {len(active_trades)} active trades from history log.")
 
 
 def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
@@ -157,8 +231,8 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 current_atr = data_list[-1]['ATR']
                 atr_pct = (current_atr / current_price)
                 
-                # Default Stop Loss: 1.5x ATR, but cap at max 1.5% Net Loss to minimize drawdown
-                default_sl_pct = min(-0.015, -(atr_pct * 1.5))
+                # Default Stop Loss: 1.5% Max Net Loss (Aggressive for $10)
+                default_sl_pct = max(-0.015, -(atr_pct * 1.5)) 
                 
                 # Fetch dynamically updated trailing SL for this position, or initialize to default SL
                 with symbol_states_lock:
@@ -169,14 +243,19 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
                 # Trailing Take-Profit Logic
                 # Move the SL up as profit increases to let winners run
-                # Step 1: Break-even (0% SL) once profit reaches 0.5%
-                if upnl_pct >= 0.005 and sl_pct < 0.0:
-                    sl_pct = 0.0
+                # Step 1: Break-even + tiny profit (+0.1%) once profit reaches 0.5%
+                if upnl_pct >= 0.005 and sl_pct < 0.001:
+                    sl_pct = 0.001
                 
-                # Step 2: Lock in 50% of the profit if it rockets up
-                # e.g. If upnl_pct is 3%, set SL to 1.5% profit
-                if upnl_pct >= 0.015:
+                # Step 2: Lock in 50% of profit once profit reaches 1.0%
+                if upnl_pct >= 0.010:
                     potential_new_sl = upnl_pct * 0.5 
+                    if potential_new_sl > sl_pct:
+                        sl_pct = potential_new_sl
+                
+                # Step 3: Lock in more profit once it hits 1.5%
+                if upnl_pct >= 0.015:
+                    potential_new_sl = upnl_pct * 0.65
                     if potential_new_sl > sl_pct:
                         sl_pct = potential_new_sl
                         
@@ -259,47 +338,72 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                         f"Realized Balance: `${exchange.cash:.6f} USDT`\n"
                         f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
                     )
-                    notifier.send_message(msg)
+                    safe_send_message(notifier, msg)
 
-            # 5. Open new position using PER-SYMBOL min_notional
+            # 5. Open new position
             if not exchange.is_in_position and latest_signal in ['LONG', 'SHORT']:
-                # ATOMIC CHECK: Only open if we are under the global concurrent-trade limit
                 with active_trades_lock:
-                    if len(active_trades) >= MAX_CONCURRENT_TRADES:
-                        pass  # Too many open trades, skip this signal
+                    if not allow_new_trades["value"]:
+                        pass # Paused
+                    elif len(active_trades) >= MAX_CONCURRENT_TRADES:
+                        # User Request: If limit reached, log that we are waiting and re-validating on current data
+                        if time.time() % 30 < 1: # Log once every ~30s to avoid spam
+                            logger.info(f"[{symbol}] Slot limit (10/10) reached. Signal {latest_signal} active at ${current_price}. Re-validating in 1s...")
+                        pass 
                     else:
-                        # Use capital leverage to meet THIS symbol's minimum notional
-                        target_notional = max(min_notional * 1.05, min_notional + 0.1)  # 5% buffer above minimum
-                        req_leverage = target_notional / exchange.cash if exchange.cash > 0 else LEVERAGE
-                        actual_leverage = max(LEVERAGE, min(125, int(req_leverage + 1)))
-                        strategy.leverage = actual_leverage
+                        # Inside the lock and inside the check!
+                        current_bal = exchange.cash
+                        min_qty = info.get('min_qty', 0.001)
+                        min_entry_cost = min_qty * current_price
+                        
+                        target_notional = max(min_notional * 1.05, min_entry_cost * 1.05)
+                        target_notional = max(target_notional, 5.05) # Binance typical min
 
-                        # Round size to valid step size for this symbol
-                        raw_size = target_notional / current_price
-                        size = data_loader.round_step_size(raw_size, step_size)
-                        if size <= 0:
-                            size = info['min_qty']  # fallback to minimum
+                        # How much capital do we want to risk on this one trade?
+                        capital_to_risk = current_bal / MAX_CONCURRENT_TRADES
+                        
+                        if capital_to_risk < 0.01:
+                            logger.warning(f"[{symbol}] Skipping: Capital per trade too small (${capital_to_risk:.2f})")
+                        else:
+                            # Dynamic Leverage Calculation
+                            req_leverage = target_notional / capital_to_risk
+                            actual_leverage = max(1, min(75, int(req_leverage + 1)))
 
-                        actual_notional = size * current_price
-                        open_fee = actual_notional * taker_fee
+                            if actual_leverage > 75:
+                                logger.warning(f"[{symbol}] Skipping: Requires {actual_leverage}x leverage (Max 75x) for ${target_notional:.2f} notional.")
+                            else:
+                                raw_size = target_notional / current_price
+                                size = data_loader.round_step_size(raw_size, step_size)
+                                if size <= 0: size = info['min_qty']
 
-                        if exchange.cash * actual_leverage >= actual_notional:
-                            success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
-                            if success:
-                                active_trades[symbol] = datetime.utcnow()  # Register trade in global tracker
-                                msg = (
-                                    f"🔔 *{symbol} — New {latest_signal}* ({len(active_trades)}/{MAX_CONCURRENT_TRADES} slots used)\n"
-                                    f"Entry: `${current_price:.6f}`\n"
-                                    f"Notional: `${actual_notional:.2f}` (min: ${min_notional}) at `{actual_leverage}x`\n"
-                                    f"Open Fee: `-${open_fee:.6f} USDT` ({taker_fee*100:.3f}%)\n"
-                                    f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
-                                )
-                                notifier.send_message(msg)
+                                actual_notional = size * current_price
+                                open_fee = actual_notional * taker_fee
+                                close_fee_est = actual_notional * taker_fee
+                                total_fees = open_fee + close_fee_est
+
+                                # Pre-trade Profitability Check
+                                expected_gross_profit = actual_notional * TAKE_PROFIT_PCT
+                                expected_net_profit = expected_gross_profit - total_fees
+
+                                if expected_net_profit <= 0:
+                                    logger.warning(f"[{symbol}] Skipping: Unprofitable mathematically. Expected net profit: ${expected_net_profit:.4f} (Fees: ${total_fees:.4f})")
+                                elif current_bal * actual_leverage >= actual_notional:
+                                    strategy.leverage = actual_leverage
+                                    success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
+                                    if success:
+                                        active_trades[symbol] = datetime.utcnow()
+                                        safe_send_message(notifier,
+                                            f"🔔 *{symbol} — New {latest_signal}* ({len(active_trades)}/{MAX_CONCURRENT_TRADES} slots)\n"
+                                            f"Entry: `${current_price:.4f}` | Notional: `${actual_notional:.2f}`\n"
+                                            f"Lev: `{actual_leverage}x` | Risking: `${(actual_notional/actual_leverage):.2f}`\n"
+                                            f"Fee: `-${open_fee:.6f}`\n"
+                                            f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
+                                        )
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
 
-        time.sleep(30)  # 30s between checks per symbol to respect rate limits with 60 pairs
+        time.sleep(1)  # Minimal sleep for zero-delay hyperscaling (1s)
 
 
 def telegram_listener(notifier, ai_brain):
@@ -328,33 +432,50 @@ def telegram_listener(notifier, ai_brain):
                             lines.append("*🔥 Open Positions:*")
                             for sym, d in in_pos:
                                 pnl_str = f"{'+'if d['upnl']>=0 else ''}{d['upnl']:.6f}"
-                                lines.append(f"• {sym} `{d['direction']}` @ `${d['entry']:.4f}` | uPnL (net): `{pnl_str}`")
+                                # Calculate percentage uPnL for Telegram
+                                entry_val = d['size'] * d['entry']
+                                upnl_pct = (d['upnl'] / entry_val * 100) if entry_val > 0 else 0
+                                lines.append(f"• {sym} `{d['direction']}` @ `${d['entry']:.4f}` | uPnL: `{pnl_str}` ({upnl_pct:+.2f}%)")
                         else:
                             lines.append("_No open positions. Scanning..._")
                         lines.append(f"\n📊 Dashboard: http://localhost:{DASHBOARD_PORT}")
-                        notifier.send_message("\n".join(lines))
+                        safe_send_message(notifier, "\n".join(lines))
 
                 elif text == "/symbols":
                     with symbol_states_lock:
                         syms = list(symbol_states.keys())
-                    notifier.send_message(f"🌐 *Scanning {len(syms)} markets:*\n`{'`, `'.join(syms)}`")
+                    safe_send_message(notifier, f"🌐 *Scanning {len(syms)} markets:*\n`{'`, `'.join(syms)}`")
 
                 elif text == "/stop":
                     bot_running["value"] = False
-                    notifier.send_message("🛑 *All scanners paused.* Send `/start` to resume.")
+                    save_bot_state() # PERSIST
+                    safe_send_message(notifier, "🛑 *All scanners paused.* Send `/start` to resume.")
 
                 elif text == "/start":
                     bot_running["value"] = True
-                    notifier.send_message("🚀 *All scanners resumed!* Scanning the market...")
+                    save_bot_state() # PERSIST
+                    safe_send_message(notifier, "🚀 *All scanners resumed!* Scanning the market...")
+
+                elif text == "/pause_entries":
+                    allow_new_trades["value"] = False
+                    save_bot_state() # PERSIST
+                    safe_send_message(notifier, "⏸️ *New trade entries PAUSED.* Scanner still tracking open positions.")
+
+                elif text == "/resume_entries":
+                    allow_new_trades["value"] = True
+                    save_bot_state() # PERSIST
+                    safe_send_message(notifier, "▶️ *New trade entries RESUMED!* Bot will now enter new positions.")
 
                 elif text in ["hi", "hii", "hello", "hey", "/help", "help", "try", "/try"]:
-                    notifier.send_message(
+                    safe_send_message(notifier,
                         "👋 *Hello! I am ProfitBot Pro.*\n\n"
                         "Here is what you can tell me to do:\n"
                         "• `/status` - View live PnL and active trades.\n"
                         "• `/symbols` - See what coins I am scanning.\n"
                         "• `/stop` - Pause the bot (no new entries).\n"
                         "• `/start` - Resume scanning the market.\n"
+                        "• `/pause_entries` - Stop entering NEW trades.\n"
+                        "• `/resume_entries` - Allow new trades again.\n"
                         "• Or just ask me a question about my strategy!"
                     )
 
@@ -393,9 +514,9 @@ def telegram_listener(notifier, ai_brain):
                     ai_reply = ai_brain.generate_reply(text, context=context, chat_id=str(chat_id))
                     
                     if ai_reply:
-                        notifier.send_message(ai_reply)
+                        safe_send_message(notifier, ai_reply)
                     else:
-                        notifier.send_message("🤔 Try `/status`, `/symbols`, `/stop`, or `/start`!")
+                        safe_send_message(notifier, "🤔 Try `/status`, `/symbols`, `/stop`, or `/start`!")
 
         except Exception as e:
             logger.error(f"Listener Error: {e}")
@@ -409,16 +530,27 @@ def run_paper_trading():
     data_loader = DataLoader(exchange_id='binanceusdm', testnet=TESTNET)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     ai_brain = AIBrain(GEMINI_API_KEY)
-    global_account = PaperAccount(initial_capital=INITIAL_CAPITAL)
+    global_account = PaperAccount(initial_capital=INITIAL_CAPITAL, log_file=TRADE_LOG_FILE)
 
     # 1. Fetch top symbols dynamically
     logger.info("Fetching top Binance Futures symbols by volume...")
     symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD)
     logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
 
-    # 2. Start Dashboard
+    # 0. Load persisted state
+    load_bot_state()
+    sync_active_trades(global_account, MAX_CONCURRENT_TRADES)
+
+    # 1. Start Dashboard
     dashboard_thread = threading.Thread(
-        target=run_dashboard, kwargs={"host": "0.0.0.0", "port": DASHBOARD_PORT}, daemon=True
+        target=run_dashboard, 
+        kwargs={
+            "host": "0.0.0.0", 
+            "port": DASHBOARD_PORT, 
+            "log_file": TRADE_LOG_FILE, 
+            "profile_name": PROFILE
+        }, 
+        daemon=True
     )
     dashboard_thread.start()
     logger.info(f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}")
@@ -428,24 +560,34 @@ def run_paper_trading():
     tg_thread.start()
 
     # 4. Send startup notification
-    notifier.send_message(
+    safe_send_message(notifier,
         f"🚀 *ProfitBot Pro — Multi-Scanner Online!*\n"
         f"📡 Scanning *{len(symbols)} markets* simultaneously\n"
-        f"💰 Capital: `${INITIAL_CAPITAL} USDT` (paper)\n"
-        f"🛡️ Smart Money: RSI + MACD + ATR Trailing SL\n"
-        f"💸 All PnL shown after Binance fees\n"
-        f"📊 Dashboard: `http://localhost:{DASHBOARD_PORT}`\n\n"
-        f"Markets: `{'`, `'.join(symbols[:10])}`... and {len(symbols)-10} more!"
+        f"💰 Capital: `${INITIAL_CAPITAL} USDT`\n"
+        f"🛠️ Settings: `{'ON' if allow_new_trades['value'] else 'OFF'}` Entries\n"
+        f"📊 Dashboard: `http://localhost:{DASHBOARD_PORT}`"
     )
 
-    # 5. Create one strategy + exchange per symbol and start threads
+    # 5. Create threads
     symbol_threads = []
-    logger.info(f"Starting scanners for {len(symbols)} symbols. Staggering startup to prevent rate limits...")
+    logger.info(f"Starting scanners for {len(symbols)} symbols...")
     for symbol in symbols:
         strategy = SmartMoneyStrategy(leverage=LEVERAGE)
         exchange = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
         exchange.shared_account = global_account
         exchange.symbol = symbol
+
+        # Resume state if this symbol was in an open trade
+        with active_trades_lock:
+            if symbol in active_trades:
+                # Find the open trade in history to get entry price and size
+                for trade in reversed(global_account.trade_history):
+                    if trade.get('symbol') == symbol and trade.get('action') in ['LONG', 'SHORT']:
+                        exchange.position_direction = trade['action']
+                        exchange.position_size = trade['size']
+                        exchange.entry_price = trade['price']
+                        logger.info(f"[{symbol}] Resumed {exchange.position_direction} position from log.")
+                        break
 
         t = threading.Thread(
             target=scan_symbol,
@@ -455,8 +597,7 @@ def run_paper_trading():
         )
         t.start()
         symbol_threads.append(t)
-        logger.info(f"[{symbol}] Scanner thread launched.")
-        time.sleep(0.5)  # Stagger starts to avoid API rate limits but keep boot fast
+        time.sleep(0.05) 
 
     logger.info("All scanners running. ProfitBot Pro is LIVE.")
 
@@ -478,15 +619,63 @@ def run_paper_trading():
             dashboard_state["total_upnl"] = round(total_upnl, 6)
             dashboard_state["realized_cash"] = round(global_account.get_cash(), 6)
             dashboard_state["live_balance"] = round(global_account.get_cash() + total_upnl, 6)
+            dashboard_state["initial_capital"] = INITIAL_CAPITAL
             dashboard_state["open_trade_count"] = open_count
             dashboard_state["max_trades"] = MAX_CONCURRENT_TRADES
             dashboard_state["bot_status"] = "RUNNING 🟢" if bot_running["value"] else "STOPPED 🛑"
+            dashboard_state["entries_allowed"] = allow_new_trades["value"]
+
+            # -- Handle Dashboard Toggle Request --
+            if set_entries_state[0] is not None:
+                new_val = set_entries_state[0]
+                set_entries_state[0] = None
+                if allow_new_trades["value"] != new_val:
+                    allow_new_trades["value"] = new_val
+                    save_bot_state() # PERSIST
+                    state_str = "RESUMED ▶️" if allow_new_trades["value"] else "PAUSED ⏸️"
+                    safe_send_message(notifier, f"📢 *Dashboard Update:* New trade entries {state_str}")
+                    logger.info(f"Entry control set via dashboard: {state_str}")
+
             # -- Handle History Clear Request --
             if clear_history_requested[0]:
                 with global_account.lock:
                     global_account.trade_history = []
+                    if os.path.exists(TRADE_LOG_FILE):
+                        try:
+                            with open(TRADE_LOG_FILE, "w") as f:
+                                json.dump([], f)
+                        except: pass
                 clear_history_requested[0] = False
-                logger.info("Trade history cleared in memory.")
+                logger.info("Trade history cleared in memory and on disk.")
+
+            # -- Handle Panic Close All Request --
+            if panic_close_all_requested[0]:
+                with active_trades_lock:
+                    for sym in active_trades:
+                        manual_close_requests.add(sym)
+                panic_close_all_requested[0] = False
+                logger.warning("PANIC: Closing all active trades from dashboard request!")
+                safe_send_message(notifier, "🚨 *PANIC BUTTON PRESSED* 🚨\nClosing all active trades immediately!")
+
+            # -- Handle Reset Account Request --
+            if reset_account_requested[0]:
+                with global_account.lock:
+                    global_account.cash = INITIAL_CAPITAL
+                    global_account.trade_history = []
+                    if os.path.exists(TRADE_LOG_FILE):
+                        try:
+                            with open(TRADE_LOG_FILE, "w") as f:
+                                json.dump([], f)
+                        except: pass
+                
+                with active_trades_lock:
+                    for sym in active_trades:
+                        manual_close_requests.add(sym)
+                    active_trades.clear()
+                
+                reset_account_requested[0] = False
+                logger.warning(f"♻️ ACCOUNT RESET to ${INITIAL_CAPITAL:.2f} requested from dashboard!")
+                safe_send_message(notifier, f"♻️ *ACCOUNT RESET*\nBalance is now ${INITIAL_CAPITAL:.2f} USDT. All history cleared. Any stuck trades will be closed.")
 
             time.sleep(5)
 

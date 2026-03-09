@@ -1,6 +1,22 @@
 services:
   - type: web
-    name: profitbot-pro
+    name: profitbot-three
+    env: docker
+    plan: free
+    region: oregon 
+    healthCheckPath: /
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        value: 8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM
+      - key: TELEGRAM_CHAT_ID
+        value: "8506152391"
+      - key: BOT_PROFILE
+        value: "three_dollar"
+      - key: INITIAL_CAPITAL
+        value: "3.00"
+
+  - type: web
+    name: profitbot-ten
     env: docker
     plan: free
     region: oregon
@@ -10,7 +26,7 @@ services:
         value: 8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM
       - key: TELEGRAM_CHAT_ID
         value: "8506152391"
-      - key: GEMINI_API_KEY
-        sync: false
+      - key: BOT_PROFILE
+        value: "ten_dollar"
       - key: INITIAL_CAPITAL
-        value: "2.98"
+        value: "10.00"

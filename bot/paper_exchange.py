@@ -11,15 +11,16 @@ TRADE_LOG_FILE = "trade_log.json"
 
 class PaperAccount:
     """Thread-safe global singleton to hold the master paper trading balance and synchronized trade history."""
-    def __init__(self, initial_capital=10000.0):
+    def __init__(self, initial_capital=10000.0, log_file=TRADE_LOG_FILE):
         self.lock = threading.Lock()
         self.cash = initial_capital
         self.trade_history = []
+        self.log_file = log_file
         
         # Try to load existing trades/balance to prevent reset on restart (if desired)
-        if os.path.exists(TRADE_LOG_FILE):
+        if os.path.exists(self.log_file):
              try:
-                 with open(TRADE_LOG_FILE, "r") as f:
+                 with open(self.log_file, "r") as f:
                      self.trade_history = json.load(f)
                  if self.trade_history:
                      # Resume balance from the very last logged trade
@@ -58,7 +59,7 @@ class PaperAccount:
             
             # Persist to disk
             try:
-                with open(TRADE_LOG_FILE, "w") as f:
+                with open(self.log_file, "w") as f:
                     json.dump(self.trade_history, f, indent=2)
             except Exception as e:
                 logger.error(f"Failed to save trade log: {e}")
