@@ -51,7 +51,7 @@ class DataLoader:
         precision = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
         return round(int(quantity / step_size) * step_size, precision)
 
-    def get_top_futures_symbols(self, top_n=60, min_volume_usd=50_000_000):
+    def get_top_futures_symbols(self, top_n=60, min_volume_usd=50_000_000, offset=0):
         """Dynamically fetches the highest volume USDT pairs from MEXC."""
         try:
             resp = requests.get(f"{MEXC_BASE}/ticker/24hr", timeout=10)
@@ -75,19 +75,20 @@ class DataLoader:
             # Sort by volume descending
             valid_pairs.sort(key=lambda x: x['vol'], reverse=True)
             
-            # Extract just the symbol names
-            symbols = [p['symbol'] for p in valid_pairs[:top_n]]
+            # Extract symbols with offset and limit
+            symbols = [p['symbol'] for p in valid_pairs[offset : offset + top_n]]
             
             # Fallback if API fails to return enough pairs
             if not symbols:
                 symbols = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT']
                 
-            logger.info(f"Dynamically fetched top {len(symbols)} highest-volume USDT pairs.")
+            logger.info(f"Dynamically fetched top {len(symbols)} symbols (Offset: {offset}, Limit: {top_n}).")
             return symbols
             
         except Exception as e:
             logger.error(f"Error fetching top symbols dynamically: {e}")
-            return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT']
+            fallback = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT']
+            return fallback[offset : offset + top_n]
 
     def fetch_ohlcv(self, symbol, timeframe='1m', limit=100):
         """

@@ -3,6 +3,10 @@ ProfitBot Pro - Multi-Symbol Binance Futures Paper Trading Bot
 Scans ALL top USDT Futures pairs simultaneously.
 Everything displayed is NET of Binance fees.
 """
+import os
+from dotenv import load_dotenv
+load_dotenv() # Load variables from .env if it exists
+
 import time
 import logging
 import threading
@@ -22,6 +26,7 @@ parser = argparse.ArgumentParser(description="ProfitBot Pro")
 parser.add_argument("--profile", type=str, default="default", help="Profile name for this bot instance")
 parser.add_argument("--port", type=int, default=int(os.environ.get('PORT', '5000')), help="Port for the dashboard")
 parser.add_argument("--capital", type=float, default=None, help="Initial capital for this profile")
+parser.add_argument("--symbols_offset", type=int, default=None, help="Offset for market scanning")
 args = parser.parse_args()
 
 PROFILE = args.profile if args.profile != "default" else os.getenv("BOT_PROFILE", "default")
@@ -29,9 +34,6 @@ DASHBOARD_PORT = args.port
 STATE_FILE = f"bot_state_{PROFILE}.json" if PROFILE != "default" else "bot_state.json"
 TRADE_LOG_FILE = f"trade_log_{PROFILE}.json" if PROFILE != "default" else "trade_log.json"
 
-# Update dashboard initial capital early
-dashboard_state["initial_capital"] = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
-dashboard_state["max_trades"] = 5 # Default for optimized logic
 
 # Setup Logging
 logging.basicConfig(
@@ -47,15 +49,23 @@ GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set ONLY in Render Envir
 TESTNET = True
 # Priority: CLI Arg > Env Var > Default ($10.00)
 INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
+SYMBOLS_OFFSET = args.symbols_offset if args.symbols_offset is not None else int(os.getenv("SYMBOLS_OFFSET", "0"))
 LEVERAGE = int(os.environ.get('LEVERAGE', '45'))
 TIMEFRAME = '5m'
 TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '60'))
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
 # DASHBOARD_PORT handled by argparse above
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
-MAX_CONCURRENT_TRADES = 5  # Reduced to 5 for better capital allocation on small accounts
-MAX_TRADE_HOLD_MINUTES = int(os.environ.get('MAX_TRADE_HOLD_MINUTES', '180'))
+MAX_CONCURRENT_TRADES = 5
+MAX_TRADE_HOLD_MINUTES = 180
 TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.03'))  # Increased to 3.0% TP
+# -------------------------------------------------------------------------
+
+# Update dashboard state for this profile
+dashboard_state["profile_name"] = PROFILE
+dashboard_state["initial_capital"] = INITIAL_CAPITAL
+dashboard_state["max_trades"] = MAX_CONCURRENT_TRADES
+dashboard_state["log_file"] = TRADE_LOG_FILE
 # -------------------------------------------------------------------------
 
 # Shared bot state
@@ -356,49 +366,53 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                         min_qty = info.get('min_qty', 0.001)
                         min_entry_cost = min_qty * current_price
                         
-                        target_notional = max(min_notional * 1.05, min_entry_cost * 1.05)
-                        target_notional = max(target_notional, 5.05) # Binance typical min
-
-                        # How much capital do we want to risk on this one trade?
+                        # Proportional Sizing: Risk a certain percentage of the account per trade
                         capital_to_risk = current_bal / MAX_CONCURRENT_TRADES
                         
-                        if capital_to_risk < 0.01:
+                        if capital_to_risk < 0.10: # Minimum per-trade risk
                             logger.warning(f"[{symbol}] Skipping: Capital per trade too small (${capital_to_risk:.2f})")
                         else:
-                            # Dynamic Leverage Calculation
-                            req_leverage = target_notional / capital_to_risk
-                            actual_leverage = max(1, min(75, int(req_leverage + 1)))
+                            # Target notional based on balance * leverage
+                            # We use 80% of our buying power per slot for safety
+                            target_notional = capital_to_risk * LEVERAGE * 0.8
+                            
+                            # Ensure we at least meet the exchange minimum
+                            target_notional = max(target_notional, min_notional * 1.05, 5.05)
+
+                            actual_leverage = max(1, min(75, int(target_notional / capital_to_risk) + 1))
 
                             if actual_leverage > 75:
-                                logger.warning(f"[{symbol}] Skipping: Requires {actual_leverage}x leverage (Max 75x) for ${target_notional:.2f} notional.")
-                            else:
-                                raw_size = target_notional / current_price
-                                size = data_loader.round_step_size(raw_size, step_size)
-                                if size <= 0: size = info['min_qty']
+                                # If we need too much leverage, cap the notional to what we can afford at 75x
+                                actual_leverage = 75
+                                target_notional = capital_to_risk * 75
+                            
+                            raw_size = target_notional / current_price
+                            size = data_loader.round_step_size(raw_size, step_size)
+                            if size <= 0: size = info['min_qty']
 
-                                actual_notional = size * current_price
-                                open_fee = actual_notional * taker_fee
-                                close_fee_est = actual_notional * taker_fee
-                                total_fees = open_fee + close_fee_est
+                            actual_notional = size * current_price
+                            open_fee = actual_notional * taker_fee
+                            close_fee_est = actual_notional * taker_fee
+                            total_fees = open_fee + close_fee_est
 
-                                # Pre-trade Profitability Check
-                                expected_gross_profit = actual_notional * TAKE_PROFIT_PCT
-                                expected_net_profit = expected_gross_profit - total_fees
+                            # Pre-trade Profitability Check
+                            expected_gross_profit = actual_notional * TAKE_PROFIT_PCT
+                            expected_net_profit = expected_gross_profit - total_fees
 
-                                if expected_net_profit <= 0:
-                                    logger.warning(f"[{symbol}] Skipping: Unprofitable mathematically. Expected net profit: ${expected_net_profit:.4f} (Fees: ${total_fees:.4f})")
-                                elif current_bal * actual_leverage >= actual_notional:
-                                    strategy.leverage = actual_leverage
-                                    success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
-                                    if success:
-                                        active_trades[symbol] = datetime.utcnow()
-                                        safe_send_message(notifier,
-                                            f"🔔 *{symbol} — New {latest_signal}* ({len(active_trades)}/{MAX_CONCURRENT_TRADES} slots)\n"
-                                            f"Entry: `${current_price:.4f}` | Notional: `${actual_notional:.2f}`\n"
-                                            f"Lev: `{actual_leverage}x` | Risking: `${(actual_notional/actual_leverage):.2f}`\n"
-                                            f"Fee: `-${open_fee:.6f}`\n"
-                                            f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
-                                        )
+                            if expected_net_profit <= 0:
+                                logger.warning(f"[{symbol}] Skipping: Unprofitable mathematically. Expected net profit: ${expected_net_profit:.4f} (Fees: ${total_fees:.4f})")
+                            elif current_bal * actual_leverage >= actual_notional:
+                                strategy.leverage = actual_leverage
+                                success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
+                                if success:
+                                    active_trades[symbol] = datetime.utcnow()
+                                    safe_send_message(notifier,
+                                        f"🔔 *{symbol} — New {latest_signal}* ({len(active_trades)}/{MAX_CONCURRENT_TRADES} slots)\n"
+                                        f"Entry: `${current_price:.4f}` | Notional: `${actual_notional:.2f}`\n"
+                                        f"Lev: `{actual_leverage}x` | Risking: `${(actual_notional/actual_leverage):.2f}`\n"
+                                        f"Fee: `-${open_fee:.6f}`\n"
+                                        f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
+                                    )
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
@@ -533,8 +547,8 @@ def run_paper_trading():
     global_account = PaperAccount(initial_capital=INITIAL_CAPITAL, log_file=TRADE_LOG_FILE)
 
     # 1. Fetch top symbols dynamically
-    logger.info("Fetching top Binance Futures symbols by volume...")
-    symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD)
+    logger.info(f"Fetching top Binance Futures symbols (n={TOP_N_SYMBOLS}, offset={SYMBOLS_OFFSET})...")
+    symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD, offset=SYMBOLS_OFFSET)
     logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
 
     # 0. Load persisted state

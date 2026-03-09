@@ -6,14 +6,15 @@ services:
     region: oregon 
     healthCheckPath: /
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        value: 8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM
-      - key: TELEGRAM_CHAT_ID
-        value: "8506152391"
+      - fromGroup: bot-secrets
       - key: BOT_PROFILE
         value: "three_dollar"
       - key: INITIAL_CAPITAL
         value: "3.00"
+      - key: TOP_N_SYMBOLS
+        value: "30"
+      - key: SYMBOLS_OFFSET
+        value: "0"
 
   - type: web
     name: profitbot-ten
@@ -22,11 +23,12 @@ services:
     region: oregon
     healthCheckPath: /
     envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        value: 8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM
-      - key: TELEGRAM_CHAT_ID
-        value: "8506152391"
+      - fromGroup: bot-secrets
       - key: BOT_PROFILE
         value: "ten_dollar"
       - key: INITIAL_CAPITAL
         value: "10.00"
+      - key: TOP_N_SYMBOLS
+        value: "30"
+      - key: SYMBOLS_OFFSET
+        value: "30"

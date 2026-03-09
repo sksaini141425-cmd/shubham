@@ -15,7 +15,8 @@ dashboard_state = {
     "last_update": "",
     "symbols": {},
     "profile_name": "default",
-    "log_file": "trade_log.json"
+    "log_file": "trade_log.json",
+    "initial_capital": 3.00
 }
 
 manual_close_requests = set()
