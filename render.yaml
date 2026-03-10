@@ -1,19 +1,28 @@
 services:
   - type: web
-    name: profitbot-three
-    env: docker
+    name: profitbot-pro
+    runtime: python
     plan: free
-    region: oregon 
-    healthCheckPath: /
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py --strategy scalper70 --leverage 20 --capital 3 --max_trades 15 --port $PORT
     envVars:
-      - fromGroup: bot-secrets
-      - key: BOT_PROFILE
-        value: "three_dollar"
+      - key: PORT
+        value: 5000
+      - key: BYBIT_API_KEY
+        sync: false
+      - key: BYBIT_API_SECRET
+        sync: false
+      - key: EXCHANGE
+        value: bybit
+      - key: USE_REAL_EXCHANGE
+        value: "true"
+      - key: USE_TESTNET
+        value: "true"
       - key: INITIAL_CAPITAL
-        value: "3.00"
-      - key: TOP_N_SYMBOLS
-        value: "30"
-      - key: SYMBOLS_OFFSET
-        value: "0"
+        value: "3.0"
+      - key: LEVERAGE
+        value: "20"
       - key: MAX_CONCURRENT_TRADES
-        value: "10"
+        value: "15"
+      - key: TAKE_PROFIT_PCT
+        value: "0.03"
