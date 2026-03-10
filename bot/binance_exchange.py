@@ -5,7 +5,7 @@ import time
 logger = logging.getLogger(__name__)
 
 class BinanceExchange:
-    def __init__(self, api_key=None, api_secret=None, testnet=True, taker_fee=0.0005):
+    def __init__(self, api_key=None, api_secret=None, testnet=False, taker_fee=0.0005, symbol="BTC/USDT"):
         """
         Binance USDⓈ-M Futures Exchange Wrapper using CCXT.
         """
@@ -16,10 +16,12 @@ class BinanceExchange:
                 'defaultType': 'future'
             }
         })
+        logger.info(f"Initialized Binance client for {symbol} with API Key: {str(api_key)[:5]}...")
         if testnet:
             self.client.set_sandbox_mode(True)
+            logger.info("Using CCXT Sandbox Mode for Binance Futures Testnet.")
         
-        self.symbol = "BTC/USDT"
+        self.symbol = symbol
         self.taker_fee = taker_fee
         self.shared_account = None  # For compatibility with main.py logic
 
@@ -108,8 +110,8 @@ class BinanceExchange:
                     'price': round(current_price, 2),
                     'size': round(size, 6),
                     'fee': round(fee, 4),
-                    'pnl': None,
-                    'cash_delta': 0
+                    'pnl': 0.0,
+                    'cash_delta': 0.0
                 })
             
             return True
@@ -118,14 +120,21 @@ class BinanceExchange:
             return False
 
     def get_unrealized_pnl(self, current_price):
-        """Fetches uPnL directly from Binance."""
+        """Calculates current floating PnL for the active position."""
         try:
-            positions = self.client.fetch_positions([self.symbol])
-            if positions:
-                return float(positions[0].get('unrealizedPnl', 0.0))
+            self.sync_position()
+            if self.position_direction == 'LONG':
+                return (current_price - self.entry_price) * self.position_size
+            elif self.position_direction == 'SHORT':
+                return (self.entry_price - current_price) * self.position_size
+            return 0.0
         except Exception as e:
             logger.error(f"Error fetching uPnL from Binance: {e}")
-        return 0.0
+            return 0.0
+
+    def check_liquidation(self, current_price, timestamp):
+        """Real exchange handles liquidation, so this just returns False."""
+        return False
 
     def get_portfolio_value(self, current_price):
         """Total Balance including unrealized PnL."""

@@ -72,7 +72,17 @@ class AIBrain:
             _conversation_history[chat_id] = history
 
             return reply
-
         except Exception as e:
-            logger.error(f"AI Brain Exception: {type(e).__name__}: {str(e)}")
+            logger.error(f"AI Brain Exception: {e}")
             return None
+
+    def generate_response(self, prompt, context_title="Analysis"):
+        """Simple wrapper for generic AI processing."""
+        if not self.model:
+            return ""
+        try:
+            response = self.model.generate_content(prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"AI Brain Simple Response Error: {e}")
+            return ""

@@ -5,7 +5,7 @@ Everything displayed is NET of Binance fees.
 """
 import os
 from dotenv import load_dotenv
-load_dotenv() # Load variables from .env if it exists
+load_dotenv(override=True) # Load variables from .env if it exists, overwrite environment
 
 import time
 import logging
@@ -13,10 +13,16 @@ import threading
 from datetime import datetime
 import os
 from bot.data_loader import DataLoader
-from bot.strategy import SmartMoneyStrategy
+from bot.strategy import SmartMoneyStrategy, RSDTraderStrategy, EliteScalperStrategy, Scalper70Strategy, HyperScalper25Strategy, DiamondSniperStrategy
+from bot.signal_loader import SignalLoader
+from bot.binance_exchange import BinanceExchange
 from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
-from bot.ai_brain import AIBrain
+try:
+    from bot.ai_brain import AIBrain
+except ImportError:
+    AIBrain = None
+from bot.signal_intelligence import SignalIntelligence
 from dashboard import run_dashboard, dashboard_state, manual_close_requests, clear_history_requested, set_entries_state, panic_close_all_requested, reset_account_requested
 import json
 import argparse
@@ -26,7 +32,10 @@ parser = argparse.ArgumentParser(description="ProfitBot Pro")
 parser.add_argument("--profile", type=str, default="default", help="Profile name for this bot instance")
 parser.add_argument("--port", type=int, default=int(os.environ.get('PORT', '5000')), help="Port for the dashboard")
 parser.add_argument("--capital", type=float, default=None, help="Initial capital for this profile")
-parser.add_argument("--symbols_offset", type=int, default=None, help="Offset for market scanning")
+parser.add_argument("--symbols_offset", type=int, default=0, help="Offset for market scanning")
+parser.add_argument("--strategy", type=str, default="smart_money", help="Strategy to use: smart_money, rsd")
+parser.add_argument("--max_trades", type=int, default=None, help="Maximum concurrent trades")
+parser.add_argument("--leverage", type=int, default=None, help="Leverage for this bot instance")
 args = parser.parse_args()
 
 PROFILE = args.profile if args.profile != "default" else os.getenv("BOT_PROFILE", "default")
@@ -43,22 +52,34 @@ logging.basicConfig(
 logger = logging.getLogger("MainBot")
 
 # --- CONFIGURATION (loaded from environment variables for cloud safety) ---
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '8774183137:AAF2O1EFz_2XjtF2LHA3ALmIuRvuTEBLtmM')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '8506152391')
+# IMPORTANT: do not hardcode secrets in code (safe for uploads).
+TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
+TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set ONLY in Render Environment Variables, NEVER hardcode here!
-TESTNET = True
+TESTNET = False # Binance Futures Testnet is DEPRECATED. Use False or Demo.
 # Priority: CLI Arg > Env Var > Default ($10.00)
 INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
 SYMBOLS_OFFSET = args.symbols_offset if args.symbols_offset is not None else int(os.getenv("SYMBOLS_OFFSET", "0"))
-LEVERAGE = int(os.environ.get('LEVERAGE', '45'))
+# Priority: CLI Arg > Env Var > Default (45)
+LEVERAGE = args.leverage if args.leverage is not None else int(os.environ.get('LEVERAGE', '45'))
 TIMEFRAME = '5m'
 TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '60'))
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
 # DASHBOARD_PORT handled by argparse above
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
-MAX_CONCURRENT_TRADES = 5
+USE_REAL_EXCHANGE = os.environ.get('USE_REAL_EXCHANGE', 'false').lower() == 'true'
+BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '').strip()
+BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
+MAX_CONCURRENT_TRADES = args.max_trades if args.max_trades is not None else int(os.environ.get('MAX_CONCURRENT_TRADES', '15'))
+# If MAX_CONCURRENT_TRADES is very high (e.g. 999), we treat it as 'unlimited' 
+# and use a fixed capital partition for sizing.
+IS_UNLIMITED = MAX_CONCURRENT_TRADES >= 500
 MAX_TRADE_HOLD_MINUTES = 180
-TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.03'))  # Increased to 3.0% TP
+TAKE_PROFIT_PCT = float(os.environ.get('TAKE_PROFIT_PCT', '0.03'))
+
+print(f"DEBUG: USE_REAL_EXCHANGE={USE_REAL_EXCHANGE}")
+print(f"DEBUG: BINANCE_API_KEY_LEN={len(BINANCE_API_KEY)}")
+print(f"DEBUG: BINANCE_API_SECRET_LEN={len(BINANCE_API_SECRET)}")
 # -------------------------------------------------------------------------
 
 # Update dashboard state for this profile
@@ -135,7 +156,7 @@ def sync_active_trades(global_account, max_concurrent):
             logger.info(f"Synced {len(active_trades)} active trades from history log.")
 
 
-def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
+def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel):
     """
     Runs the trading loop for ONE symbol in its own thread.
     Uses the per-symbol min notional and fees from Binance exchangeInfo.
@@ -161,7 +182,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 continue
 
             # 1. Fetch candles
-            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=250)
+            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=1000)
             if not data_list:
                 time.sleep(15)
                 continue
@@ -170,8 +191,13 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
             latest_time = data_list[-1]['timestamp']
 
             # 2. Calculate indicators + signals
-            data_list = strategy.calculate_indicators(data_list)
-            data_list = strategy.generate_signals(data_list)
+            try:
+                data_list = strategy.calculate_indicators(data_list)
+                data_list = strategy.generate_signals(data_list)
+            except Exception as e:
+                logger.error(f"[{symbol}] Indicator/Signal Error: {e}")
+                time.sleep(15)
+                continue
 
             if not data_list or 'signal' not in data_list[-1]:
                 time.sleep(15)
@@ -182,6 +208,13 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
             # 3. Unrealized PnL (net of open fee + estimated close fee)
             upnl_gross = exchange.get_unrealized_pnl(current_price)
+            
+            # 3b. Real-time Liquidation Check
+            if exchange.check_liquidation(current_price, latest_time):
+                # If liquidated, skip the rest of the loop for this symbol
+                time.sleep(1)
+                continue
+
             close_fee = exchange.position_size * current_price * taker_fee if exchange.is_in_position else 0
             upnl_net = upnl_gross - close_fee
 
@@ -233,92 +266,83 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                 }
 
             # 4. Manage open position
-            if exchange.is_in_position and 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
-                entry_val = exchange.position_size * exchange.entry_price
-                upnl_pct = upnl_net / entry_val if entry_val > 0 else 0
-                
-                # Retrieve current ATR for dynamic SL/TP calculation
-                current_atr = data_list[-1]['ATR']
-                atr_pct = (current_atr / current_price)
-                
-                # Default Stop Loss: 1.5% Max Net Loss (Aggressive for $10)
-                default_sl_pct = max(-0.015, -(atr_pct * 1.5)) 
-                
-                # Fetch dynamically updated trailing SL for this position, or initialize to default SL
-                with symbol_states_lock:
-                    if 'trailing_sl_pct' not in symbol_states[symbol]:
-                        symbol_states[symbol]['trailing_sl_pct'] = default_sl_pct
-                    
-                    sl_pct = symbol_states[symbol]['trailing_sl_pct']
+            close_position = False
+            close_reason = ""
 
-                # Trailing Take-Profit Logic
-                # Move the SL up as profit increases to let winners run
-                # Step 1: Break-even + tiny profit (+0.1%) once profit reaches 0.5%
-                if upnl_pct >= 0.005 and sl_pct < 0.001:
-                    sl_pct = 0.001
-                
-                # Step 2: Lock in 50% of profit once profit reaches 1.0%
-                if upnl_pct >= 0.010:
-                    potential_new_sl = upnl_pct * 0.5 
-                    if potential_new_sl > sl_pct:
-                        sl_pct = potential_new_sl
-                
-                # Step 3: Lock in more profit once it hits 1.5%
-                if upnl_pct >= 0.015:
-                    potential_new_sl = upnl_pct * 0.65
-                    if potential_new_sl > sl_pct:
-                        sl_pct = potential_new_sl
-                        
-                with symbol_states_lock:
-                    symbol_states[symbol]['trailing_sl_pct'] = sl_pct
-
-                close_position = False
-                close_reason = ""
-                
-                # --- MANUAL EXIT ---
+            if exchange.is_in_position:
+                # 4a. Check Manual Exit first (Highest Priority - ignores technical data)
                 if symbol in manual_close_requests:
                     close_position = True
-                    close_reason = "Manual Exit via Dashboard 🖱️"
+                    close_reason = "Manual Exit via Dashboard 🖱️ (FORCE)"
                     logger.info(f"[{symbol}] {close_reason}")
                     manual_close_requests.remove(symbol)
-                
-                # --- HARD TAKE-PROFIT ---
-                if upnl_pct >= TAKE_PROFIT_PCT:
-                    close_position = True
-                    close_reason = f"TAKE PROFIT HIT at {upnl_pct*100:.2f}% (NET) 🎯"
-                    logger.info(f"[{symbol}] {close_reason} (Price: {current_price})")
 
-                # --- MAX HOLD TIME SAFETY EXIT ---
-                if not close_position:
-                    with active_trades_lock:
-                        entry_time = active_trades.get(symbol)
-                    if entry_time:
-                        hold_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
-                        if hold_minutes >= MAX_TRADE_HOLD_MINUTES:
-                            close_position = True
-                            close_reason = f"MAX HOLD TIME ({MAX_TRADE_HOLD_MINUTES}m) reached ⏰"
-                            logger.warning(f"[{symbol}] {close_reason}")
+                # 4b. Technical Exits (Requires Indicators)
+                if not close_position and 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
+                    entry_val = exchange.position_size * exchange.entry_price
+                    upnl_pct = upnl_net / entry_val if entry_val > 0 else 0
+                    
+                    # Retrieve current ATR for dynamic SL/TP calculation
+                    current_atr = data_list[-1]['ATR']
+                    atr_pct = (current_atr / current_price)
+                    
+                    # Default Stop Loss: 1.5% Max Net Loss
+                    default_sl_pct = max(-0.015, -(atr_pct * 3.0)) 
+                    
+                    with symbol_states_lock:
+                        if 'trailing_sl_pct' not in symbol_states[symbol]:
+                            symbol_states[symbol]['trailing_sl_pct'] = default_sl_pct
+                        sl_pct = symbol_states[symbol]['trailing_sl_pct']
 
-                # --- HIT DYNAMIC STOP-LOSS / TRAILING PROFIT STOP ---
-                if not close_position and upnl_pct <= sl_pct:
-                    close_position = True
-                    if sl_pct > 0:
-                        close_reason = f"TRAILING PROFIT STOP HIT at {sl_pct*100:.2f}% (NET)"
+                    # Trailing Take-Profit Logic
+                    if upnl_pct >= 0.005 and sl_pct < 0.001:
+                        sl_pct = 0.001
+                    if upnl_pct >= 0.010:
+                        potential_new_sl = upnl_pct * 0.5 
+                        if potential_new_sl > sl_pct: sl_pct = potential_new_sl
+                    if upnl_pct >= 0.015:
+                        potential_new_sl = upnl_pct * 0.65
+                        if potential_new_sl > sl_pct: sl_pct = potential_new_sl
+                            
+                    with symbol_states_lock:
+                        symbol_states[symbol]['trailing_sl_pct'] = sl_pct
+
+                    # --- HARD TAKE-PROFIT ---
+                    if upnl_pct >= TAKE_PROFIT_PCT:
+                        close_position = True
+                        close_reason = f"TAKE PROFIT HIT at {upnl_pct*100:.2f}% (NET) 🎯"
+                        logger.info(f"[{symbol}] {close_reason} (Price: {current_price})")
+
+                    # --- MAX HOLD TIME SAFETY EXIT ---
+                    if not close_position:
+                        with active_trades_lock:
+                            entry_time = active_trades.get(symbol)
+                        if entry_time:
+                            hold_minutes = (datetime.utcnow() - entry_time).total_seconds() / 60
+                            if hold_minutes >= MAX_TRADE_HOLD_MINUTES:
+                                close_position = True
+                                close_reason = f"MAX HOLD TIME ({MAX_TRADE_HOLD_MINUTES}m) reached ⏰"
+                                logger.warning(f"[{symbol}] {close_reason}")
+
+                    # --- HIT DYNAMIC STOP-LOSS / TRAILING PROFIT STOP ---
+                    if not close_position and upnl_pct <= sl_pct:
+                        close_position = True
+                        if sl_pct > 0:
+                            close_reason = f"TRAILING PROFIT STOP HIT at {sl_pct*100:.2f}% (NET)"
+                        else:
+                            close_reason = f"STOP LOSS HIT at {sl_pct*100:.2f}% (NET)"
                         logger.warning(f"[{symbol}] {close_reason}")
-                    else:
-                        close_reason = f"STOP LOSS HIT at {sl_pct*100:.2f}% (NET)"
-                        logger.warning(f"[{symbol}] {close_reason} (Price: {current_price}, SL: {sl_price})")
 
-                # --- TREND-REVERSAL EXIT ---
-                if not close_position:
-                    if exchange.position_direction == 'LONG' and latest_signal == 'SHORT':
-                        close_position = True
-                        close_reason = "Reversal signal (LONG->SHORT)"
-                        logger.warning(f"[{symbol}] {close_reason}. Closing.")
-                    elif exchange.position_direction == 'SHORT' and latest_signal == 'LONG':
-                        close_position = True
-                        close_reason = "Reversal signal (SHORT->LONG)"
-                        logger.warning(f"[{symbol}] {close_reason}. Closing.")
+                    # --- TREND-REVERSAL EXIT ---
+                    if not close_position:
+                        if exchange.position_direction == 'LONG' and latest_signal == 'SHORT':
+                            close_position = True
+                            close_reason = "Reversal signal (LONG->SHORT)"
+                        elif exchange.position_direction == 'SHORT' and latest_signal == 'LONG':
+                            close_position = True
+                            close_reason = "Reversal signal (SHORT->LONG)"
+                        if close_position:
+                            logger.warning(f"[{symbol}] {close_reason}. Closing.")
 
                 if close_position:
                     gross_pnl = exchange.get_unrealized_pnl(current_price)
@@ -350,74 +374,138 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     )
                     safe_send_message(notifier, msg)
 
+            # 4. Update Market Intelligence periodically
+            signal_intel.update_market_intelligence()
+
             # 5. Open new position
             if not exchange.is_in_position and latest_signal in ['LONG', 'SHORT']:
-                with active_trades_lock:
-                    if not allow_new_trades["value"]:
-                        pass # Paused
-                    elif len(active_trades) >= MAX_CONCURRENT_TRADES:
-                        # User Request: If limit reached, log that we are waiting and re-validating on current data
-                        if time.time() % 30 < 1: # Log once every ~30s to avoid spam
-                            logger.info(f"[{symbol}] Slot limit (10/10) reached. Signal {latest_signal} active at ${current_price}. Re-validating in 1s...")
-                        pass 
-                    else:
-                        # Inside the lock and inside the check!
-                        current_bal = exchange.cash
-                        min_qty = info.get('min_qty', 0.001)
-                        min_entry_cost = min_qty * current_price
-                        
-                        # Proportional Sizing: Risk a certain percentage of the account per trade
-                        capital_to_risk = current_bal / MAX_CONCURRENT_TRADES
-                        
-                        if capital_to_risk < 0.10: # Minimum per-trade risk
-                            logger.warning(f"[{symbol}] Skipping: Capital per trade too small (${capital_to_risk:.2f})")
-                        else:
-                            # Target notional based on balance * leverage
-                            # We use 80% of our buying power per slot for safety
-                            target_notional = capital_to_risk * LEVERAGE * 0.8
-                            
-                            # Ensure we at least meet the exchange minimum
-                            target_notional = max(target_notional, min_notional * 1.05, 5.05)
-
-                            actual_leverage = max(1, min(75, int(target_notional / capital_to_risk) + 1))
-
-                            if actual_leverage > 75:
-                                # If we need too much leverage, cap the notional to what we can afford at 75x
-                                actual_leverage = 75
-                                target_notional = capital_to_risk * 75
-                            
-                            raw_size = target_notional / current_price
-                            size = data_loader.round_step_size(raw_size, step_size)
-                            if size <= 0: size = info['min_qty']
-
-                            actual_notional = size * current_price
-                            open_fee = actual_notional * taker_fee
-                            close_fee_est = actual_notional * taker_fee
-                            total_fees = open_fee + close_fee_est
-
-                            # Pre-trade Profitability Check
-                            expected_gross_profit = actual_notional * TAKE_PROFIT_PCT
-                            expected_net_profit = expected_gross_profit - total_fees
-
-                            if expected_net_profit <= 0:
-                                logger.warning(f"[{symbol}] Skipping: Unprofitable mathematically. Expected net profit: ${expected_net_profit:.4f} (Fees: ${total_fees:.4f})")
-                            elif current_bal * actual_leverage >= actual_notional:
-                                strategy.leverage = actual_leverage
-                                success = exchange.execute_market_order(latest_signal, size, current_price, latest_time)
-                                if success:
-                                    active_trades[symbol] = datetime.utcnow()
-                                    safe_send_message(notifier,
-                                        f"🔔 *{symbol} — New {latest_signal}* ({len(active_trades)}/{MAX_CONCURRENT_TRADES} slots)\n"
-                                        f"Entry: `${current_price:.4f}` | Notional: `${actual_notional:.2f}`\n"
-                                        f"Lev: `{actual_leverage}x` | Risking: `${(actual_notional/actual_leverage):.2f}`\n"
-                                        f"Fee: `-${open_fee:.6f}`\n"
-                                        f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
-                                    )
+                try_open_position(symbol, latest_signal, current_price, exchange, data_loader, signal_intel, notifier, latest_time)
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
 
         time.sleep(1)  # Minimal sleep for zero-delay hyperscaling (1s)
+
+
+def try_open_position(symbol, side, current_price, exchange, data_loader, signal_intel, notifier, timestamp, provider=None):
+    """Shared logic for opening a position from any source (technical or external)."""
+    with active_trades_lock:
+        # 1. Filter Check (Signal Intel)
+        if not signal_intel.filter_signal(symbol, side, provider=provider, min_score=0.7):
+            return False
+
+        # 2. General Limits
+        if not allow_new_trades["value"]:
+            return False
+            
+        if not IS_UNLIMITED and len(active_trades) >= MAX_CONCURRENT_TRADES:
+            if time.time() % 30 < 1:
+                logger.info(f"[{symbol}] Limit reached ({len(active_trades)}). Skipping {side}.")
+            return False
+
+        if symbol in active_trades:
+            return False
+
+        # 3. Market Info for sizing
+        info = data_loader.get_symbol_info(symbol)
+        if not info: return False
+        
+        step_size = info.get('step_size', 0.001)
+        min_notional = info.get('min_notional', 5.0)
+        taker_fee = 0.0005 # Default
+
+        # 4. Sizing logic for $3.00 capital
+        current_bal = exchange.cash
+        if IS_UNLIMITED:
+            capital_to_risk = INITIAL_CAPITAL / 10
+        else:
+            capital_to_risk = current_bal / MAX_CONCURRENT_TRADES
+
+        if capital_to_risk < 0.10: return False
+
+        # Calculate exact leverage needed for $3 balance
+        # If balance is $3 and min_notional is $5, we need at least 1.66x leverage.
+        # We target a bit above min_notional (1.1x) to avoid order rejection.
+        target_notional = max(min_notional * 1.1, 5.5) # Minimum target notional
+        
+        # Calculate leverage: Notional / Capital
+        required_lev = int(target_notional / capital_to_risk) + 1
+        
+        # Stay within safe limits (up to 50x for low capital is realistic, 75x is aggressive)
+        actual_leverage = max(1, min(50, required_lev))
+        
+        # Re-calculate notional based on leverage
+        target_notional = capital_to_risk * actual_leverage * 0.95 # Use 95% of power
+        
+        raw_size = target_notional / current_price
+        size = data_loader.round_step_size(raw_size, step_size)
+        
+        # Final validation
+        if (size * current_price) < min_notional:
+            # Try one last push: increase leverage if possible
+            if actual_leverage < 75:
+                actual_leverage = min(75, actual_leverage + 5)
+                target_notional = capital_to_risk * actual_leverage * 0.95
+                raw_size = target_notional / current_price
+                size = data_loader.round_step_size(raw_size, step_size)
+
+        # Detailed logging for user visibility
+        logger.info(f"[{symbol}] Low-Cap Sizing: Min Notional ${min_notional} | Using {actual_leverage}x leverage for ${capital_to_risk:.2f} capital")
+
+        if size <= 0: return False
+
+        # 5. Execute
+        success = exchange.execute_market_order(side, size, current_price, timestamp)
+        if success:
+            active_trades[symbol] = datetime.utcnow()
+            safe_send_message(notifier,
+                f"🚀 *{symbol} — {'Elite ' if provider else ''}{side}*\n"
+                f"Source: `{provider if provider else 'Technical'}`\n"
+                f"Entry: `${current_price:.4f}` | Notional: `${(size*current_price):.2f}`\n"
+                f"Risking: `${((size*current_price)/actual_leverage):.2f}` ({actual_leverage}x)\n"
+            )
+            return True
+            
+    return False
+
+
+def external_signal_loop(signal_loader, signal_intel, data_loader, notifier, global_account):
+    """Background thread that scans vip_signals.json and executes them if they pass intel filter."""
+    logger.info("📡 External Signal Watcher started...")
+    processed_dates = set()
+    
+    while bot_running["value"]:
+        try:
+            # Check for signals from last 5 minutes
+            new_ext_signals = signal_loader.get_new_signals(window_minutes=5)
+            for s in new_ext_signals:
+                sig_id = f"{s['symbol']}_{s['side']}_{s['original_date']}"
+                if sig_id in processed_dates: continue
+                processed_dates.add(sig_id)
+
+                symbol = s['symbol']
+                provider = s['provider']
+                
+                # Check Signal Intelligence filter (Smart Money Score)
+                if signal_intel.filter_signal(symbol, s['side'], provider=provider, min_score=0.7):
+                    # For external execution, we create a temporary exchange wrapper
+                    # that shares the global account.
+                    temp_exchange = PaperExchange(initial_capital=global_account.initial_capital)
+                    temp_exchange.shared_account = global_account
+                    temp_exchange.cash = global_account.get_cash()
+                    
+                    # Fetch current price for execution
+                    ticker = data_loader.get_ticker(symbol)
+                    if ticker:
+                        curr_p = ticker['last']
+                        success = try_open_position(symbol, s['side'], curr_p, temp_exchange, data_loader, signal_intel, notifier, datetime.utcnow(), provider=provider)
+                        if success:
+                            logger.info(f"🏆 Successfully executed external signal for {symbol}")
+            
+            time.sleep(15) # Scan more frequently (15s)
+        except Exception as e:
+            logger.error(f"Error in external signal loop: {e}")
+            time.sleep(10)
 
 
 def telegram_listener(notifier, ai_brain):
@@ -540,15 +628,21 @@ def telegram_listener(notifier, ai_brain):
 def run_paper_trading():
     logger.info("🤖 ProfitBot Pro — Multi-Symbol Scanner Starting...")
 
-    # Initialize shared components
+    global args
+    # --- Initialize Components ---
     data_loader = DataLoader(exchange_id='binanceusdm', testnet=TESTNET)
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-    ai_brain = AIBrain(GEMINI_API_KEY)
+    ai_brain = AIBrain(GEMINI_API_KEY) if AIBrain and GEMINI_API_KEY else None
+    signal_intel = SignalIntelligence(ai_brain=ai_brain)
+    signal_loader = SignalLoader()
+    dashboard_state["use_real_exchange"] = USE_REAL_EXCHANGE
     global_account = PaperAccount(initial_capital=INITIAL_CAPITAL, log_file=TRADE_LOG_FILE)
 
     # 1. Fetch top symbols dynamically
+    print(f"DIAGNOSTIC: TOP_N_SYMBOLS={TOP_N_SYMBOLS}, MIN_VOLUME_USD={MIN_VOLUME_USD}, SYMBOLS_OFFSET={SYMBOLS_OFFSET}", flush=True)
     logger.info(f"Fetching top Binance Futures symbols (n={TOP_N_SYMBOLS}, offset={SYMBOLS_OFFSET})...")
     symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD, offset=SYMBOLS_OFFSET)
+    print(f"DIAGNOSTIC: Fetched {len(symbols)} symbols", flush=True)
     logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
 
     # 0. Load persisted state
@@ -573,6 +667,14 @@ def run_paper_trading():
     tg_thread = threading.Thread(target=telegram_listener, args=(notifier, ai_brain), daemon=True)
     tg_thread.start()
 
+    # 4. Start External Signal Watcher
+    ext_thread = threading.Thread(
+        target=external_signal_loop, 
+        args=(signal_loader, signal_intel, data_loader, notifier, global_account), 
+        daemon=True
+    )
+    ext_thread.start()
+
     # 4. Send startup notification
     safe_send_message(notifier,
         f"🚀 *ProfitBot Pro — Multi-Scanner Online!*\n"
@@ -582,30 +684,59 @@ def run_paper_trading():
         f"📊 Dashboard: `http://localhost:{DASHBOARD_PORT}`"
     )
 
-    # 5. Create threads
+    # 5. Start Scanners
     symbol_threads = []
-    logger.info(f"Starting scanners for {len(symbols)} symbols...")
+    logger.info(f"Starting scanners for {len(symbols)} symbols using strategy {args.strategy}...")
     for symbol in symbols:
-        strategy = SmartMoneyStrategy(leverage=LEVERAGE)
-        exchange = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
-        exchange.shared_account = global_account
-        exchange.symbol = symbol
+        def thread_wrapper(sym, current_args):
+            try:
+                # Initialize per-thread components
+                if current_args.strategy == "rsd":
+                    strat = RSDTraderStrategy(leverage=LEVERAGE)
+                elif current_args.strategy == "elite":
+                    strat = EliteScalperStrategy(leverage=LEVERAGE)
+                elif current_args.strategy == "scalper70":
+                    strat = Scalper70Strategy(leverage=LEVERAGE)
+                elif current_args.strategy == "hyper25":
+                    strat = HyperScalper25Strategy(leverage=LEVERAGE)
+                elif current_args.strategy == "diamond":
+                    strat = DiamondSniperStrategy(leverage=LEVERAGE)
+                else:
+                    strat = SmartMoneyStrategy(leverage=LEVERAGE)
+                
+                if USE_REAL_EXCHANGE and BINANCE_API_KEY and BINANCE_API_SECRET:
+                    ccxt_sym = f"{sym[:-4]}/{sym[-4:]}" if sym.endswith('USDT') else sym
+                    exch = BinanceExchange(
+                        api_key=BINANCE_API_KEY, 
+                        api_secret=BINANCE_API_SECRET, 
+                        testnet=False, # TESTNET set to False
+                        symbol=ccxt_sym
+                    )
+                else:
+                    exch = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
+                    exch.leverage = LEVERAGE
+                
+                exch.shared_account = global_account
+                exch.symbol = sym
 
-        # Resume state if this symbol was in an open trade
-        with active_trades_lock:
-            if symbol in active_trades:
-                # Find the open trade in history to get entry price and size
-                for trade in reversed(global_account.trade_history):
-                    if trade.get('symbol') == symbol and trade.get('action') in ['LONG', 'SHORT']:
-                        exchange.position_direction = trade['action']
-                        exchange.position_size = trade['size']
-                        exchange.entry_price = trade['price']
-                        logger.info(f"[{symbol}] Resumed {exchange.position_direction} position from log.")
-                        break
+                # Resume state if this symbol was in an open trade
+                with active_trades_lock:
+                    if sym in active_trades:
+                        for trade in reversed(global_account.trade_history):
+                            if trade.get('symbol') == sym and trade.get('action') in ['LONG', 'SHORT']:
+                                exch.position_direction = trade['action']
+                                exch.position_size = trade['size']
+                                exch.entry_price = trade['price']
+                                exch.entry_time = trade.get('timestamp')
+                                break
+
+                scan_symbol(sym, data_loader, strat, exch, notifier, signal_intel)
+            except Exception as e:
+                logger.error(f"Thread for {sym} failed: {e}")
 
         t = threading.Thread(
-            target=scan_symbol,
-            args=(symbol, data_loader, strategy, exchange, notifier),
+            target=thread_wrapper,
+            args=(symbol, args),
             daemon=True,
             name=f"Scanner-{symbol}"
         )
@@ -638,6 +769,7 @@ def run_paper_trading():
             dashboard_state["max_trades"] = MAX_CONCURRENT_TRADES
             dashboard_state["bot_status"] = "RUNNING 🟢" if bot_running["value"] else "STOPPED 🛑"
             dashboard_state["entries_allowed"] = allow_new_trades["value"]
+            dashboard_state["strategy_name"] = args.strategy
 
             # -- Handle Dashboard Toggle Request --
             if set_entries_state[0] is not None:

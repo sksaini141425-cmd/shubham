@@ -25,7 +25,8 @@ class TelegramNotifier:
         }
         
         try:
-            response = requests.post(self.base_url, json=payload, timeout=10)
+            # Note: verify=False is a workaround for local SSL protocol errors
+            response = requests.post(self.base_url, json=payload, timeout=10, verify=False)
             if response.status_code == 200:
                 logger.info(f"Telegram alert sent: {text[:30]}...")
                 return True
@@ -44,7 +45,8 @@ class TelegramNotifier:
         url = f"https://api.telegram.org/bot{self.token}/getUpdates"
         params = {"timeout": 10, "offset": offset}
         try:
-            response = requests.get(url, params=params, timeout=15)
+            # verify=False is used to bypass local SSL handshake failures
+            response = requests.get(url, params=params, timeout=15, verify=False)
             if response.status_code == 200:
                 return response.json().get("result", [])
             return []

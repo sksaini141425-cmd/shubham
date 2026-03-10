@@ -1,80 +1,4 @@
-"""
-ProfitBot Pro - Live Paper Trading Dashboard
-Rich chart view with per-asset candlestick charts, indicators, TP/SL, and live trades.
-"""
-from flask import Flask, jsonify, render_template_string, request
-import json
-import os
-import requests as req_lib
 
-app = Flask(__name__)
-
-dashboard_state = {
-    "bot_status": "STARTING",
-    "entries_allowed": True,
-    "last_update": "",
-    "symbols": {},
-    "profile_name": "default",
-    "log_file": "trade_log.json",
-    "initial_capital": 3.00
-}
-
-manual_close_requests = set()
-set_entries_state = [None]  # None = no request, True = enable, False = disable
-clear_history_requested = [False]
-panic_close_all_requested = [False]
-reset_account_requested = [False]
-
-TOP_SYMBOLS = [
-    'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
-    'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT',
-    'MATICUSDT', 'LTCUSDT', 'ATOMUSDT', 'UNIUSDT', 'SHIBUSDT',
-    'AAVEUSDT', 'NEARUSDT', 'ARBUSDT', 'APTUSDT', 'OPUSDT'
-]
-
-def _fetch_live_prices():
-    """Batch fetch live prices from MEXC when scanner threads haven't populated state."""
-    try:
-        # Note: verify=False is a workaround for local SSL protocol errors
-        resp = req_lib.get(
-            'https://api.mexc.com/api/v3/ticker/price',
-            timeout=8,
-            verify=False
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            # Convert list of {symbol, price} to a dict map
-            price_map = {item['symbol']: float(item['price']) for item in data}
-            
-            result = {}
-            for sym in TOP_SYMBOLS:
-                price = price_map.get(sym, 0)
-                state = dashboard_state.get('symbols', {}).get(sym, {})
-                result[sym] = {
-                    'price': price,
-                    'signal': state.get('signal', 'SCANNING'),
-                    'direction': state.get('direction', 'FLAT'),
-                    'entry': state.get('entry', 0),
-                    'upnl': state.get('upnl', 0),
-                    'min_notional': state.get('min_notional', 5.0),
-                    'fee_pct': state.get('fee_pct', '0.050%'),
-                    'rsi': state.get('rsi', None),
-                    'macd_hist': state.get('macd_hist', None),
-                    'ema200': state.get('ema200', None),
-                    'atr': state.get('atr', None),
-                    'bb_upper': state.get('bb_upper', None),
-                    'bb_middle': state.get('bb_middle', None),
-                    'bb_lower': state.get('bb_lower', None),
-                    'sl_price': state.get('sl_price', None),
-                    'tp_price': state.get('tp_price', None),
-                    'candles': state.get('candles', [])
-                }
-            return result
-    except Exception:
-        pass
-    return dashboard_state.get('symbols', {})
-
-HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -294,10 +218,10 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
         <div class="modal-chart" id="modal-chart"></div>
         <div class="indicator-row" id="modal-inds"></div>
         <div class="trade-info" id="modal-trade" style="display:none"></div>
-        <div class="strategy-box" id="strategy-info-box">
-            <strong>📐 Active Strategy Logic:</strong><br>
-            <span id="strat-desc">Loading strategy details...</span>
-        </div>
+        <div class="strategy-box">
+            <strong>📐 Smart Money Strategy Logic:</strong><br>
+            • <strong>EMA 200</strong> — Trend filter. Price above = bullish bias, below = bearish bias<br>
+            • <strong>Bollinger Bands (20)</strong> — Entry trigger. Pull back to lower band = LONG, rally to upper band = SHORT<br>
             • <strong>RSI (14)</strong> — Momentum. LONG needs RSI &lt;45 (oversold). SHORT needs RSI &gt;55 (overbought)<br>
             • <strong>MACD (12/26/9)</strong> — Confirmation. Histogram must be rising (LONG) or falling (SHORT)<br>
             • <strong>ATR (14)</strong> — Stop Loss distance. SL = 1.5× ATR below/above entry<br>
@@ -322,43 +246,12 @@ let subscribedSyms = new Set();
 async function requestManualClose(sym) {
     if(!confirm('Are you sure you want to close ' + sym + ' manually?')) return;
     try {
-        const resp = await fetch('/api/close_trade/' + sym, {method: 'POST'});
-        const data = await resp.json();
-        if(data.ok) {
-            alert('Close requested for ' + sym);
-            closeModal();
-            refresh();
-        }
+        await fetch('/api/close_trade/' + sym, {method: 'POST'});
+        alert('Close requested for ' + sym);
+        closeModal();
+        refresh();
     } catch(e) {
         alert('Error requesting close');
-    }
-}
-
-async function closeAllTrades() {
-    if(!confirm('🚨 PANIC: Are you sure you want to close ALL active trades?')) return;
-    try {
-        const resp = await fetch('/api/close_all', {method: 'POST'});
-        const data = await resp.json();
-        if(data.ok) {
-            alert('All trades closing...');
-            refresh();
-        }
-    } catch(e) {
-        alert('Error closing all trades');
-    }
-}
-
-async function resetAccount() {
-    if(!confirm('♻️ RESET: This will clear history and reset balance to your starting capital. Proceed?')) return;
-    try {
-        const resp = await fetch('/api/reset_account', {method: 'POST'});
-        const data = await resp.json();
-        if(data.ok) {
-            alert('Account reset successful!');
-            refresh();
-        }
-    } catch(e) {
-        alert('Error resetting account');
     }
 }
 
@@ -544,15 +437,15 @@ async function refresh() {
         // --- REAL-TIME LIVE BALANCE: Cash + Unrealized PnL ---
         const STARTING_CAPITAL = d.initial_capital != null ? d.initial_capital : 3.0;
         const liveBal = d.live_balance != null ? d.live_balance : STARTING_CAPITAL;
-        const availableCash = d.realized_cash != null ? d.realized_cash : STARTING_CAPITAL;
+        const realizedCash = d.realized_cash != null ? d.realized_cash : STARTING_CAPITAL;
         const totalUpnl = d.total_upnl != null ? d.total_upnl : 0;
         const openCount = d.open_trade_count != null ? d.open_trade_count : 0;
         const maxTrades = d.max_trades != null ? d.max_trades : 3;
         const liveBalChg = liveBal - STARTING_CAPITAL;
 
         document.getElementById('s-bal').textContent = '$'+liveBal.toFixed(4);
-        document.getElementById('s-bal-chg').textContent = 'Available: $'+availableCash.toFixed(4);
-        document.getElementById('s-bal-chg').className = 'stat-sub '+(availableCash >= 0.1 ? 'green' : 'red');
+        document.getElementById('s-bal-chg').textContent = 'Realized: $'+realizedCash.toFixed(4);
+        document.getElementById('s-bal-chg').className = 'stat-sub '+(liveBal >= STARTING_CAPITAL ? 'green' : 'red');
 
         document.getElementById('s-upnl').textContent = (totalUpnl>=0?'+$':'-$')+Math.abs(totalUpnl).toFixed(4);
         document.getElementById('s-upnl').className = 'stat-value '+(totalUpnl>=0?'green':'red');
@@ -569,16 +462,6 @@ async function refresh() {
             modeText.textContent = isLive ? "Live Testnet" : "Paper Mode";
             modeText.className = "stat-sub " + (isLive ? "blue" : "muted");
         }
-
-        const STRAT_DESCS = {
-            "smart_money": "• <strong>EMA 200</strong> — Trend filter<br>• <strong>Bollinger Bands</strong> — Entry trigger<br>• <strong>RSI</strong> — Momentum filter",
-            "scalper70": "• <strong>EMA 200 + 50</strong> — Trend confluence<br>• <strong>RSI Sniper</strong> — Oversold/Overbought entries<br>• <strong>MACD Hist</strong> — Reversal confirmation",
-            "hyper25": "• <strong>9/21 EMA Cross</strong> — High-speed momentum<br>• <strong>EMA 200 Guard</strong> — Directional safety<br>• <strong>Aggressive Compound</strong> — Fast growth logic",
-            "diamond": "• <strong>BB Squeeze</strong> — Low volatility detection<br>• <strong>Volume Breakout</strong> — Explosive entry trigger<br>• <strong>5-10% Targets</strong> — Big move sniping"
-        };
-        const activeStrat = d.strategy_name || "smart_money";
-        const stratBox = document.getElementById('strat-desc');
-        if (stratBox) stratBox.innerHTML = STRAT_DESCS[activeStrat] || STRAT_DESCS["smart_money"];
 
         if (state.view === 'table') renderTable();
         if (state.view === 'active') renderActiveTrades();
@@ -915,99 +798,3 @@ setInterval(refresh, 10000);
 </script>
 </body>
 </html>
-"""
-
-@app.route('/')
-def dashboard():
-    return render_template_string(HTML_TEMPLATE)
-
-@app.route('/ping')
-def ping():
-    return "pong", 200
-
-@app.route('/api/state')
-def api_state():
-    trades = []
-    log_file = dashboard_state.get("log_file", "trade_log.json")
-    if os.path.exists(log_file):
-        try:
-            with open(log_file, "r") as f:
-                trades = json.load(f)
-        except:
-            trades = []
-
-    symbols = dashboard_state.get("symbols", {})
-    if not symbols:
-        symbols = _fetch_live_prices()
-
-    return jsonify({
-        "bot_status": dashboard_state.get("bot_status", "RUNNING 🟢"),
-        "last_update": dashboard_state.get("last_update", ""),
-        "profile_name": dashboard_state.get("profile_name", "default"),
-        "symbols": symbols,
-        "trades": trades,
-        # Real-time balance fields populated by the main bot loop
-        "live_balance": dashboard_state.get("live_balance"),      # cash + unrealized PnL
-        "realized_cash": dashboard_state.get("realized_cash"),    # closed-trade cash only
-        "total_upnl": dashboard_state.get("total_upnl"),          # sum of all open pos uPnL
-        "open_trade_count": dashboard_state.get("open_trade_count", 0),
-        "max_trades": dashboard_state.get("max_trades", 3),
-        "initial_capital": dashboard_state.get("initial_capital", 10.0),
-        "entries_allowed": dashboard_state.get("entries_allowed", True),
-    })
-
-@app.route('/api/update', methods=['POST'])
-def update_state():
-    data = request.json
-    dashboard_state.update(data)
-    return jsonify({"ok": True})
-
-@app.route('/api/close_trade/<symbol>', methods=['POST'])
-def close_trade(symbol):
-    manual_close_requests.add(symbol)
-    return jsonify({"ok": True, "msg": f"Requested close for {symbol}"})
-
-@app.route('/api/close_all', methods=['POST'])
-def close_all():
-    panic_close_all_requested[0] = True
-    return jsonify({"ok": True, "msg": "Panic close all requested. Trades will close shortly."})
-
-@app.route('/api/reset_account', methods=['POST'])
-def reset_account():
-    reset_account_requested[0] = True
-    capital = dashboard_state.get("initial_capital", 10.0)
-    return jsonify({"ok": True, "msg": f"Account reset requested! Wiping history and setting balance to ${capital:.2f}."})
-
-@app.route('/api/set_entries', methods=['POST'])
-def set_entries():
-    enabled = request.args.get('enabled', 'true').lower() == 'true'
-    set_entries_state[0] = enabled
-    return jsonify({"ok": True})
-
-@app.route('/api/clear_history', methods=['POST'])
-def clear_history():
-    clear_history_requested[0] = True
-    log_file = dashboard_state.get("log_file", "trade_log.json")
-    if os.path.exists(log_file):
-        try:
-            with open(log_file, "w") as f:
-                json.dump([], f)
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)})
-    return jsonify({"ok": True, "msg": "Trade history cleared successfully!"})
-
-def run_dashboard(host="0.0.0.0", port=None, log_file=None, profile_name=None):
-    if port is None:
-        port = int(os.environ.get('PORT', 5000))
-    if log_file:
-        dashboard_state["log_file"] = log_file
-    if profile_name:
-        dashboard_state["profile_name"] = profile_name
-    import logging
-    log = logging.getLogger('werkzeug')
-    log.setLevel(logging.ERROR)
-    app.run(host=host, port=port, debug=False, use_reloader=False)
-
-if __name__ == "__main__":
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
