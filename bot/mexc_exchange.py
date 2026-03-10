@@ -1,29 +1,41 @@
 import ccxt
 import logging
 import time
+import os
 
 logger = logging.getLogger(__name__)
 
-class BinanceExchange:
-    def __init__(self, api_key=None, api_secret=None, testnet=False, taker_fee=0.0005, symbol="BTC/USDT"):
+class MEXCExchange:
+    def __init__(self, api_key=None, api_secret=None, testnet=False, taker_fee=0.0002, symbol="BTC/USDT", client=None):
         """
-        Binance USDⓈ-M Futures Exchange Wrapper using CCXT.
+        MEXC Futures Exchange Wrapper using CCXT.
+        MEXC fees are generally lower than Binance (Taker ~0.02%).
         """
-        self.client = ccxt.binance({
-            'apiKey': api_key,
-            'secret': api_secret,
-            'options': {
-                'defaultType': 'future',
-                'adjustForTimeDifference': True,
-                'urls': {
-                    'api': {
-                        'fapiPublic': 'https://fapi.binance.com/fapi/v1',
-                        'fapiPrivate': 'https://fapi.binance.com/fapi/v1',
-                    }
+        if client:
+            self.client = client
+        else:
+            # MEXC uses separate subdomains for futures
+            self.client = ccxt.mexc({
+                'apiKey': api_key,
+                'secret': api_secret,
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'swap', # MEXC futures are 'swap'
+                    'adjustForTimeDifference': True,
+                    'recvWindow': 10000, # Increased from 5000
                 }
-            }
-        })
-        
+            })
+            
+            # MEXC Testnet handling
+            if testnet:
+                # CCXT might not have a default sandbox URL for MEXC
+                self.client.urls['api']['swap'] = 'https://futures.testnet.mexc.com/api/v1'
+                self.client.urls['api']['public'] = 'https://futures.testnet.mexc.com/api/v1'
+                self.client.urls['api']['private'] = 'https://futures.testnet.mexc.com/api/v1'
+                logger.info("Initializing MEXC Futures Testnet connection (Manual URLs)...")
+            else:
+                logger.info("Initializing MEXC Futures Mainnet connection...")
+
         self.symbol = symbol
         self.taker_fee = taker_fee
         self.shared_account = None 
@@ -34,40 +46,26 @@ class BinanceExchange:
         self.entry_price = 0.0
         
         try:
-            # 1. Try NEW Demo Trading (Mainnet Endpoints, Sandbox=False)
-            logger.info("Attempting connection to NEW Binance Demo (fapi.binance.com)...")
-            self.client.set_sandbox_mode(False)
-            
-            # Use the Demo Trading specialized endpoints if they exist
-            # but usually it's just the fapi.binance.com with Demo keys.
-            
+            # Test connection and load markets
+            logger.info("Syncing time with MEXC...")
             self.client.load_markets()
+            if self.client.options.get('adjustForTimeDifference'):
+                self.client.fetch_time()
+            
             balance = self.client.fetch_balance()
-            
             usdt_balance = balance['total'].get('USDT', 0.0)
-            logger.info(f"✅ SUCCESS: Connected to Binance Demo. Virtual Balance: ${usdt_balance}")
+            logger.info(f"✅ SUCCESS: Connected to MEXC. Balance: ${usdt_balance}")
         except Exception as e:
-            logger.error(f"❌ Connection Failed: {e}")
-            
-            # Last ditch effort: Some users report that new Demo keys need 'demo-api' URLs
-            try:
-                logger.info("Retrying with 'demo-api.binance.com' URLs...")
-                self.client.urls['api']['fapiPublic'] = 'https://demo-api.binance.com/fapi/v1'
-                self.client.urls['api']['fapiPrivate'] = 'https://demo-api.binance.com/fapi/v1'
-                self.client.load_markets()
-                balance = self.client.fetch_balance()
-                logger.info(f"✅ SUCCESS: Connected to Binance Demo (Special Demo URL). Balance: ${balance['total'].get('USDT', 0.0)}")
-            except Exception as e2:
-                 logger.error(f"❌ All connection attempts failed: {e2}")
+            logger.error(f"❌ MEXC Connection Failed: {e}")
 
     @property
     def cash(self):
-        """Fetches available USDT balance from Binance."""
+        """Fetches available USDT balance from MEXC."""
         try:
             balance = self.client.fetch_balance()
             return float(balance['total'].get('USDT', 0.0))
         except Exception as e:
-            logger.error(f"Error fetching balance from Binance: {e}")
+            logger.error(f"Error fetching balance from MEXC: {e}")
             return 0.0
 
     @property
@@ -77,8 +75,9 @@ class BinanceExchange:
         return self.position_direction is not None
 
     def sync_position(self):
-        """Syncs local position state with Binance."""
+        """Syncs local position state with MEXC."""
         try:
+            # MEXC specific: fetch_positions for swap
             positions = self.client.fetch_positions([self.symbol])
             if not positions:
                 self.position_direction = None
@@ -86,21 +85,26 @@ class BinanceExchange:
                 self.entry_price = 0.0
                 return
 
-            pos = positions[0]
-            size = float(pos['contracts'])
-            if size > 0:
-                self.position_direction = pos['side'].upper() # LONG or SHORT
-                self.position_size = size
-                self.entry_price = float(pos['entryPrice'])
+            # Find the active position for this symbol
+            active_pos = None
+            for pos in positions:
+                if float(pos.get('contracts', 0)) > 0:
+                    active_pos = pos
+                    break
+
+            if active_pos:
+                self.position_direction = active_pos['side'].upper() # LONG or SHORT
+                self.position_size = float(active_pos['contracts'])
+                self.entry_price = float(active_pos['entryPrice'])
             else:
                 self.position_direction = None
                 self.position_size = 0.0
                 self.entry_price = 0.0
         except Exception as e:
-            logger.error(f"Error syncing position for {self.symbol}: {e}")
+            logger.error(f"Error syncing position for {self.symbol} on MEXC: {e}")
 
     def execute_market_order(self, direction, size, current_price, timestamp):
-        """Executes a market order on Binance."""
+        """Executes a market order on MEXC."""
         try:
             side = 'buy' if direction in ['LONG'] else 'sell'
             params = {}
@@ -109,13 +113,17 @@ class BinanceExchange:
                 self.sync_position()
                 if not self.position_direction:
                     return False
+                # To close, we take the opposite side
                 side = 'sell' if self.position_direction == 'LONG' else 'buy'
                 size = self.position_size
+                # MEXC specific: reduce-only parameter
                 params['reduceOnly'] = True
             
-            logger.info(f"Executing Binance Market {direction} order for {size} {self.symbol}")
+            logger.info(f"Executing MEXC Market {direction} order for {size} {self.symbol}")
             order = self.client.create_market_order(self.symbol, side, size, params=params)
             
+            # Brief pause for exchange to sync
+            time.sleep(0.5)
             self.sync_position()
             
             if self.shared_account:
@@ -137,7 +145,7 @@ class BinanceExchange:
             
             return True
         except Exception as e:
-            logger.error(f"Binance Order Execution Error ({direction}): {e}")
+            logger.error(f"MEXC Order Execution Error ({direction}): {e}")
             return False
 
     def get_unrealized_pnl(self, current_price):
@@ -150,13 +158,13 @@ class BinanceExchange:
                 return (self.entry_price - current_price) * self.position_size
             return 0.0
         except Exception as e:
-            logger.error(f"Error fetching uPnL from Binance: {e}")
+            logger.error(f"Error fetching uPnL from MEXC: {e}")
             return 0.0
 
     def check_liquidation(self, current_price, timestamp):
-        """Real exchange handles liquidation, so this just returns False."""
+        """Real exchange handles liquidation."""
         return False
 
     def get_portfolio_value(self, current_price):
         """Total Balance including unrealized PnL."""
-        return self.cash # CCXT fetch_balance()['total'] usually includes everything
+        return self.cash

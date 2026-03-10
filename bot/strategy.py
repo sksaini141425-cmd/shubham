@@ -394,11 +394,13 @@ class Scalper70Strategy(BaseStrategy):
     def calculate_indicators(self, data_list):
         if not data_list: return data_list
         closes = [d['close'] for d in data_list]
+        volumes = [d['volume'] for d in data_list]
         emas_200 = calculate_ema(closes, 200)
         emas_50 = calculate_ema(closes, 50)
         rsi = calculate_rsi(data_list, 14)
         macd, signal, hist = calculate_macd(data_list)
         atrs = calculate_atr(data_list, 14)
+        vol_sma = calculate_sma(volumes, 10)
         
         for i, d in enumerate(data_list):
             d['EMA_200'] = emas_200[i]
@@ -406,32 +408,35 @@ class Scalper70Strategy(BaseStrategy):
             d['RSI'] = rsi[i]
             d['MACD_Hist'] = hist[i]
             d['ATR'] = atrs[i]
+            d['VOL_SMA'] = vol_sma[i]
         return data_list
 
     def generate_signals(self, data_list):
         if len(data_list) < 200: return data_list
         for i in range(1, len(data_list)):
             d, prev_d = data_list[i], data_list[i-1]
-            price = d['close']
+            price, vol = d['close'], d['volume']
             rsi, macd_hist = d.get('RSI'), d.get('MACD_Hist')
             prev_macd_hist = prev_d.get('MACD_Hist')
-            ema200, ema50 = d.get('EMA_200'), d.get('EMA_50')
+            ema200, ema50, vol_sma = d.get('EMA_200'), d.get('EMA_50'), d.get('VOL_SMA')
             
             d['signal'] = 'NONE'
-            if None in [rsi, macd_hist, prev_macd_hist, ema200, ema50]: continue
+            if None in [rsi, macd_hist, prev_macd_hist, ema200, ema50, vol_sma]: continue
             
-            # LONG Condition: 
+            # LONG Condition (Professional Growth Optimized): 
             # 1. Price above EMA 200 (Uptrend)
             # 2. RSI oversold (< 35) or dipping below EMA 50
             # 3. MACD histogram starting to turn up (momentum shift)
-            if price > ema200 and rsi < 35 and macd_hist > prev_macd_hist:
+            # 4. Volume Spike (> 1.2x SMA) to confirm move
+            if price > ema200 and rsi < 35 and macd_hist > prev_macd_hist and vol > (vol_sma * 1.2):
                 d['signal'] = 'LONG'
             
             # SHORT Condition:
             # 1. Price below EMA 200 (Downtrend)
             # 2. RSI overbought (> 65) or jumping above EMA 50
             # 3. MACD histogram starting to turn down
-            elif price < ema200 and rsi > 65 and macd_hist < prev_macd_hist:
+            # 4. Volume Spike (> 1.2x SMA)
+            elif price < ema200 and rsi > 65 and macd_hist < prev_macd_hist and vol > (vol_sma * 1.2):
                 d['signal'] = 'SHORT'
                 
         return data_list

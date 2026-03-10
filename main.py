@@ -5,17 +5,26 @@ Everything displayed is NET of Binance fees.
 """
 import os
 from dotenv import load_dotenv
-load_dotenv(override=True) # Load variables from .env if it exists, overwrite environment
+env_path = os.path.join(os.path.dirname(__file__), '.env')
+loaded = load_dotenv(env_path, override=True)
+print(f"DEBUG: .env file loaded from {env_path}: {loaded}")
 
 import time
 import logging
 import threading
+import warnings
+from urllib3.exceptions import InsecureRequestWarning
+
+# Suppress insecure request warnings
+warnings.simplefilter('ignore', InsecureRequestWarning)
 from datetime import datetime
 import os
 from bot.data_loader import DataLoader
 from bot.strategy import SmartMoneyStrategy, RSDTraderStrategy, EliteScalperStrategy, Scalper70Strategy, HyperScalper25Strategy, DiamondSniperStrategy
 from bot.signal_loader import SignalLoader
 from bot.binance_exchange import BinanceExchange
+from bot.mexc_exchange import MEXCExchange
+from bot.bybit_exchange import BybitExchange
 from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
 try:
@@ -36,6 +45,7 @@ parser.add_argument("--symbols_offset", type=int, default=0, help="Offset for ma
 parser.add_argument("--strategy", type=str, default="smart_money", help="Strategy to use: smart_money, rsd")
 parser.add_argument("--max_trades", type=int, default=None, help="Maximum concurrent trades")
 parser.add_argument("--leverage", type=int, default=None, help="Leverage for this bot instance")
+parser.add_argument("--exchange", type=str, default="binance", help="Exchange to use: binance, mexc, bybit")
 args = parser.parse_args()
 
 PROFILE = args.profile if args.profile != "default" else os.getenv("BOT_PROFILE", "default")
@@ -56,7 +66,7 @@ logger = logging.getLogger("MainBot")
 TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '').strip()
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set ONLY in Render Environment Variables, NEVER hardcode here!
-TESTNET = False # Binance Futures Testnet is DEPRECATED. Use False or Demo.
+TESTNET = os.environ.get('USE_TESTNET', 'false').lower() == 'true'
 # Priority: CLI Arg > Env Var > Default ($10.00)
 INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
 SYMBOLS_OFFSET = args.symbols_offset if args.symbols_offset is not None else int(os.getenv("SYMBOLS_OFFSET", "0"))
@@ -68,8 +78,13 @@ MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
 # DASHBOARD_PORT handled by argparse above
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
 USE_REAL_EXCHANGE = os.environ.get('USE_REAL_EXCHANGE', 'false').lower() == 'true'
+EXCHANGE_NAME = args.exchange.lower() if args.exchange else os.environ.get('EXCHANGE', 'binance').lower()
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '').strip()
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
+MEXC_API_KEY = os.environ.get('MEXC_API_KEY', '').strip()
+MEXC_API_SECRET = os.environ.get('MEXC_API_SECRET', '').strip()
+BYBIT_API_KEY = os.environ.get('BYBIT_API_KEY', '').strip()
+BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', '').strip()
 MAX_CONCURRENT_TRADES = args.max_trades if args.max_trades is not None else int(os.environ.get('MAX_CONCURRENT_TRADES', '15'))
 # If MAX_CONCURRENT_TRADES is very high (e.g. 999), we treat it as 'unlimited' 
 # and use a fixed capital partition for sizing.
@@ -140,7 +155,7 @@ def sync_active_trades(global_account, max_concurrent):
             symbol = trade.get('symbol')
             if action in ['LONG', 'SHORT']:
                 open_signals[symbol] = trade.get('timestamp')
-            elif action.startswith('CLOSE'):
+            elif action.startswith('CLOSE') or action.startswith('LIQUIDATION'):
                 if symbol in open_signals:
                     del open_signals[symbol]
         
@@ -211,7 +226,10 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
             
             # 3b. Real-time Liquidation Check
             if exchange.check_liquidation(current_price, latest_time):
-                # If liquidated, skip the rest of the loop for this symbol
+                # Remove from active trades
+                with active_trades_lock:
+                    if symbol in active_trades:
+                        del active_trades[symbol]
                 time.sleep(1)
                 continue
 
@@ -294,14 +312,14 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
                             symbol_states[symbol]['trailing_sl_pct'] = default_sl_pct
                         sl_pct = symbol_states[symbol]['trailing_sl_pct']
 
-                    # Trailing Take-Profit Logic
-                    if upnl_pct >= 0.005 and sl_pct < 0.001:
-                        sl_pct = 0.001
-                    if upnl_pct >= 0.010:
+                    # Trailing Take-Profit Logic (Professional Growth Settings)
+                    if upnl_pct >= 0.004 and sl_pct < 0.001:
+                        sl_pct = 0.001 # Lock in break-even + fees
+                    if upnl_pct >= 0.008:
                         potential_new_sl = upnl_pct * 0.5 
                         if potential_new_sl > sl_pct: sl_pct = potential_new_sl
-                    if upnl_pct >= 0.015:
-                        potential_new_sl = upnl_pct * 0.65
+                    if upnl_pct >= 0.012:
+                        potential_new_sl = upnl_pct * 0.70 # Tighter trail for small accounts
                         if potential_new_sl > sl_pct: sl_pct = potential_new_sl
                             
                     with symbol_states_lock:
@@ -414,12 +432,20 @@ def try_open_position(symbol, side, current_price, exchange, data_loader, signal
         min_notional = info.get('min_notional', 5.0)
         taker_fee = 0.0005 # Default
 
-        # 4. Sizing logic for $3.00 capital
+        # 4. Sizing logic for low capital ($3.00)
         current_bal = exchange.cash
+        
+        # If balance is low, we prioritize opening AT LEAST one trade
+        # rather than splitting $3 into 15 tiny pieces ($0.20 each) which is untradable.
+        min_required_margin = min_notional / 20.0 # Estimate margin for 20x
+        
         if IS_UNLIMITED:
             capital_to_risk = INITIAL_CAPITAL / 10
         else:
-            capital_to_risk = current_bal / MAX_CONCURRENT_TRADES
+            # Smart Sizing: Use 1/MAX or enough to meet min_notional, whichever is bigger
+            partition = current_bal / MAX_CONCURRENT_TRADES
+            # If partition is too small to trade, use a bigger chunk (up to 50% of balance)
+            capital_to_risk = max(partition, min(current_bal * 0.5, min_required_margin * 1.2))
 
         if capital_to_risk < 0.10: return False
 
@@ -492,7 +518,6 @@ def external_signal_loop(signal_loader, signal_intel, data_loader, notifier, glo
                     # that shares the global account.
                     temp_exchange = PaperExchange(initial_capital=global_account.initial_capital)
                     temp_exchange.shared_account = global_account
-                    temp_exchange.cash = global_account.get_cash()
                     
                     # Fetch current price for execution
                     ticker = data_loader.get_ticker(symbol)
@@ -686,9 +711,50 @@ def run_paper_trading():
 
     # 5. Start Scanners
     symbol_threads = []
+    
+    # Initialize Master Real Exchange Client (to avoid rate limits)
+    master_client = None
+    if USE_REAL_EXCHANGE:
+        try:
+            if EXCHANGE_NAME == "bybit" and BYBIT_API_KEY and BYBIT_API_SECRET:
+                import ccxt
+                master_client = ccxt.bybit({
+                    'apiKey': BYBIT_API_KEY,
+                    'secret': BYBIT_API_SECRET,
+                    'enableRateLimit': True,
+                    'options': {
+                        'defaultType': 'linear',
+                        'adjustForTimeDifference': True,
+                        'recvWindow': 10000,
+                    }
+                })
+                if TESTNET: master_client.set_sandbox_mode(True)
+                master_client.load_markets()
+                logger.info(f"✅ Master BYBIT client initialized.")
+            elif EXCHANGE_NAME == "mexc" and MEXC_API_KEY and MEXC_API_SECRET:
+                import ccxt
+                master_client = ccxt.mexc({
+                    'apiKey': MEXC_API_KEY,
+                    'secret': MEXC_API_SECRET,
+                    'enableRateLimit': True,
+                    'options': {
+                        'defaultType': 'swap',
+                        'adjustForTimeDifference': True,
+                        'recvWindow': 10000,
+                    }
+                })
+                if TESTNET:
+                    master_client.urls['api']['swap'] = 'https://futures.testnet.mexc.com/api/v1'
+                    master_client.urls['api']['public'] = 'https://futures.testnet.mexc.com/api/v1'
+                    master_client.urls['api']['private'] = 'https://futures.testnet.mexc.com/api/v1'
+                master_client.load_markets()
+                logger.info(f"✅ Master MEXC client initialized.")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize master exchange client: {e}")
+
     logger.info(f"Starting scanners for {len(symbols)} symbols using strategy {args.strategy}...")
     for symbol in symbols:
-        def thread_wrapper(sym, current_args):
+        def thread_wrapper(sym, current_args, m_client):
             try:
                 # Initialize per-thread components
                 if current_args.strategy == "rsd":
@@ -704,20 +770,41 @@ def run_paper_trading():
                 else:
                     strat = SmartMoneyStrategy(leverage=LEVERAGE)
                 
-                if USE_REAL_EXCHANGE and BINANCE_API_KEY and BINANCE_API_SECRET:
-                    ccxt_sym = f"{sym[:-4]}/{sym[-4:]}" if sym.endswith('USDT') else sym
-                    exch = BinanceExchange(
-                        api_key=BINANCE_API_KEY, 
-                        api_secret=BINANCE_API_SECRET, 
-                        testnet=False, # TESTNET set to False
-                        symbol=ccxt_sym
-                    )
+                if USE_REAL_EXCHANGE:
+                    if EXCHANGE_NAME == "bybit" and BYBIT_API_KEY and BYBIT_API_SECRET:
+                        exch = BybitExchange(
+                            api_key=BYBIT_API_KEY, 
+                            api_secret=BYBIT_API_SECRET, 
+                            testnet=TESTNET,
+                            symbol=sym,
+                            client=m_client
+                        )
+                    elif EXCHANGE_NAME == "mexc" and MEXC_API_KEY and MEXC_API_SECRET:
+                        exch = MEXCExchange(
+                            api_key=MEXC_API_KEY, 
+                            api_secret=MEXC_API_SECRET, 
+                            testnet=TESTNET,
+                            symbol=sym,
+                            client=m_client
+                        )
+                    elif EXCHANGE_NAME == "binance" and BINANCE_API_KEY and BINANCE_API_SECRET:
+                        ccxt_sym = f"{sym[:-4]}/{sym[-4:]}" if sym.endswith('USDT') else sym
+                        exch = BinanceExchange(
+                            api_key=BINANCE_API_KEY, 
+                            api_secret=BINANCE_API_SECRET, 
+                            testnet=TESTNET,
+                            symbol=ccxt_sym
+                        )
+                    else:
+                        logger.warning(f"No API keys for {EXCHANGE_NAME.upper()}. Using Paper Mode.")
+                        exch = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
+                        exch.leverage = LEVERAGE
                 else:
                     exch = PaperExchange(initial_capital=INITIAL_CAPITAL, taker_fee=BINANCE_FEE)
                     exch.leverage = LEVERAGE
                 
                 exch.shared_account = global_account
-                exch.symbol = sym
+                # exch.symbol = sym # Removed to prevent overwriting exchange-specific symbol formatting
 
                 # Resume state if this symbol was in an open trade
                 with active_trades_lock:
@@ -728,6 +815,11 @@ def run_paper_trading():
                                 exch.position_size = trade['size']
                                 exch.entry_price = trade['price']
                                 exch.entry_time = trade.get('timestamp')
+                                # Restore margin and fees for PaperExchange
+                                if hasattr(exch, 'entry_margin'):
+                                    exch.entry_margin = trade.get('margin_locked', 0.0)
+                                if hasattr(exch, 'entry_fee_paid'):
+                                    exch.entry_fee_paid = trade.get('fee', 0.0)
                                 break
 
                 scan_symbol(sym, data_loader, strat, exch, notifier, signal_intel)
@@ -736,7 +828,7 @@ def run_paper_trading():
 
         t = threading.Thread(
             target=thread_wrapper,
-            args=(symbol, args),
+            args=(symbol, args, master_client),
             daemon=True,
             name=f"Scanner-{symbol}"
         )
