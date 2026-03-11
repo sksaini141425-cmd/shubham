@@ -8,12 +8,12 @@ services:
     envVars:
       - key: PORT
         value: 5000
+      - key: EXCHANGE
+        value: bybit
       - key: BYBIT_API_KEY
         sync: false
       - key: BYBIT_API_SECRET
         sync: false
-      - key: EXCHANGE
-        value: bybit
       - key: USE_REAL_EXCHANGE
         value: "true"
       - key: USE_TESTNET

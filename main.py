@@ -45,7 +45,7 @@ parser.add_argument("--symbols_offset", type=int, default=0, help="Offset for ma
 parser.add_argument("--strategy", type=str, default="smart_money", help="Strategy to use: smart_money, rsd")
 parser.add_argument("--max_trades", type=int, default=None, help="Maximum concurrent trades")
 parser.add_argument("--leverage", type=int, default=None, help="Leverage for this bot instance")
-parser.add_argument("--exchange", type=str, default="binance", help="Exchange to use: binance, mexc, bybit")
+parser.add_argument("--exchange", type=str, default=os.environ.get('EXCHANGE', 'bybit'), help="Exchange to use: binance, mexc, bybit")
 args = parser.parse_args()
 
 PROFILE = args.profile if args.profile != "default" else os.getenv("BOT_PROFILE", "default")
