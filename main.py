@@ -976,7 +976,7 @@ def run_paper_trading():
                 logger.warning(f"♻️ ACCOUNT RESET to ${RESET_BAL:.2f} requested from dashboard!")
                 safe_send_message(notifier, f"♻️ *ACCOUNT RESET*\nBalance is now ${RESET_BAL:.2f} USDT. All history cleared. Any stuck trades will be closed.")
 
-            time.sleep(5)
+            time.sleep(1) # Reduced from 5s to 1s for much faster dashboard command response
 
     except KeyboardInterrupt:
         bot_running["value"] = False
