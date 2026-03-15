@@ -75,6 +75,13 @@ class BybitExchange:
     def sync_position(self):
         """Syncs local position state with Bybit."""
         try:
+            # Check if market exists before attempting to fetch positions
+            if self.symbol not in self.client.markets:
+                self.position_direction = None
+                self.position_size = 0.0
+                self.entry_price = 0.0
+                return
+
             positions = self.client.fetch_positions([self.symbol])
             if not positions:
                 self.position_direction = None

@@ -206,25 +206,62 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
                 time.sleep(10)
                 continue
 
-            # 1. Fetch candles
-            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=1000)
+            # 1. IMMEDIATE Check for Manual Force Open (Before fetching all candles)
+            if not exchange.is_in_position:
+                if symbol in manual_open_requests:
+                    side = manual_open_requests.pop(symbol)
+                    current_price = data_loader.fetch_ticker(symbol)
+                    if current_price:
+                        logger.info(f"[{symbol}] Manual Force Open: {side}")
+                        try_open_position(symbol, side, current_price, exchange, data_loader, signal_intel, notifier, datetime.utcnow(), provider="Manual Force")
+                        # Skip full scan this cycle if we just opened manually
+                        time.sleep(1)
+                        continue
+
+            # 2. IMMEDIATE Check for Manual Force Close (Before fetching all candles)
+            if exchange.is_in_position:
+                if symbol in manual_close_requests:
+                    current_price = data_loader.fetch_ticker(symbol)
+                    if current_price:
+                        close_reason = "Manual Exit via Dashboard 🖱️ (FORCE)"
+                        logger.info(f"[{symbol}] {close_reason}")
+                        
+                        gross_pnl = exchange.get_unrealized_pnl(current_price)
+                        close_fee_cost = exchange.position_size * current_price * taker_fee
+                        net_pnl = gross_pnl - close_fee_cost
+                        entry_price = exchange.entry_price
+                        notional = exchange.position_size * entry_price
+                        net_pnl_pct = (net_pnl / notional * 100) if notional > 0 else 0
+
+                        exchange.execute_market_order('CLOSE', exchange.position_size, current_price, datetime.utcnow())
+                        with active_trades_lock:
+                            active_trades.pop(symbol, None)
+                        
+                        manual_close_requests.remove(symbol)
+                        
+                        emoji = "✅" if net_pnl > 0 else "❌"
+                        msg = (
+                            f"{emoji} *{symbol} Trade Closed*\n"
+                            f"Reason: _{close_reason}_\n"
+                            f"Entry: `${entry_price:.4f}` → Exit: `${current_price:.4f}`\n"
+                            f"Net PnL (after fees): `{'+'if net_pnl>=0 else ''}{net_pnl:.6f} USDT` ({net_pnl_pct:+.2f}%)\n"
+                            f"Realized Balance: `${exchange.cash:.6f} USDT`\n"
+                            f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
+                        )
+                        safe_send_message(notifier, msg)
+                        time.sleep(1)
+                        continue
+
+            # 3. Normal Scanning (Fetch candles and calculate indicators)
+            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=400) # Reduced limit to 400 for speed
             if not data_list:
-                # logger.debug(f"[{symbol}] No data, skipping...")
-                time.sleep(5) # Reduced sleep
+                time.sleep(5)
                 continue
 
             current_price = data_list[-1]['close']
             latest_time = data_list[-1]['timestamp']
 
-            # 2. Check for Manual Force Open BEFORE indicator calculation
-            if not exchange.is_in_position:
-                if symbol in manual_open_requests:
-                    side = manual_open_requests.pop(symbol)
-                    logger.info(f"[{symbol}] Manual Force Open: {side}")
-                    try_open_position(symbol, side, current_price, exchange, data_loader, signal_intel, notifier, latest_time, provider="Manual Force")
-                    # If trade successful, it will be in position in the next cycle
-
-            # 3. Calculate indicators + signals
+            # 4. Calculate indicators + signals
             try:
                 data_list = strategy.calculate_indicators(data_list)
                 data_list = strategy.generate_signals(data_list)
@@ -240,12 +277,11 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
             latest_signal = data_list[-1]['signal']
             sma = data_list[-1].get('SMA', current_price)
 
-            # 4. Unrealized PnL (net of open fee + estimated close fee)
+            # 5. Unrealized PnL (net of open fee + estimated close fee)
             upnl_gross = exchange.get_unrealized_pnl(current_price)
             
             # 3b. Real-time Liquidation Check
             if exchange.check_liquidation(current_price, latest_time):
-                # Remove from active trades
                 with active_trades_lock:
                     if symbol in active_trades:
                         del active_trades[symbol]
@@ -302,20 +338,13 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
                     } for c in data_list[-60:]]
                 }
 
-            # 4. Manage open position
+            # 6. Manage open position (Technical Signals)
             close_position = False
             close_reason = ""
 
             if exchange.is_in_position:
-                # 4a. Check Manual Exit first (Highest Priority - ignores technical data)
-                if symbol in manual_close_requests:
-                    close_position = True
-                    close_reason = "Manual Exit via Dashboard 🖱️ (FORCE)"
-                    logger.info(f"[{symbol}] {close_reason}")
-                    manual_close_requests.remove(symbol)
-
-                # 4b. Technical Exits (Requires Indicators)
-                if not close_position and 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
+                # 6a. Technical Exits (Requires Indicators)
+                if 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
                     entry_val = exchange.position_size * exchange.entry_price
                     upnl_pct = upnl_net / entry_val if entry_val > 0 else 0
                     
