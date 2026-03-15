@@ -30,6 +30,8 @@ services:
         value: "15"
       - key: TAKE_PROFIT_PCT
         value: "0.03"
+      - key: TOP_N_SYMBOLS
+        value: "30"
       - key: GEMINI_API_KEY
         sync: false
       - key: TELEGRAM_BOT_TOKEN
