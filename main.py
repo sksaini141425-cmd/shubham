@@ -20,7 +20,7 @@ warnings.simplefilter('ignore', InsecureRequestWarning)
 from datetime import datetime
 import os
 from bot.data_loader import DataLoader
-from bot.strategy import SmartMoneyStrategy, RSDTraderStrategy, EliteScalperStrategy, Scalper70Strategy, HyperScalper25Strategy, DiamondSniperStrategy
+from bot.strategy import SmartMoneyStrategy, SmartMoneyProStrategy, RSDTraderStrategy, EliteScalperStrategy, Scalper70Strategy, HyperScalper25Strategy, DiamondSniperStrategy
 from bot.signal_loader import SignalLoader
 from bot.binance_exchange import BinanceExchange
 from bot.mexc_exchange import MEXCExchange
@@ -32,8 +32,18 @@ try:
 except ImportError:
     AIBrain = None
 from bot.signal_intelligence import SignalIntelligence
-from dashboard import run_dashboard, dashboard_state, manual_close_requests, clear_history_requested, set_entries_state, panic_close_all_requested, reset_account_requested
+from bot.shared_state import (
+    dashboard_state, manual_close_requests, manual_open_requests,
+    set_entries_state, clear_history_requested, panic_close_all_requested, reset_account_requested
+)
+from dashboard import run_dashboard
 import json
+
+# --- CONFIGURATION ---
+STRATEGY_MAP = {
+    "smart_money": SmartMoneyProStrategy, # Use Pro version for 50%+ win rate
+    "diamond_sniper": DiamondSniperStrategy
+}
 import argparse
 
 # --- CLI ARGUMENTS ---
@@ -68,7 +78,7 @@ TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '').strip()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '') # Set ONLY in Render Environment Variables, NEVER hardcode here!
 TESTNET = os.environ.get('USE_TESTNET', 'false').lower() == 'true'
 # Priority: CLI Arg > Env Var > Default ($10.00)
-INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "10.00"))
+INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "3.00"))
 SYMBOLS_OFFSET = args.symbols_offset if args.symbols_offset is not None else int(os.getenv("SYMBOLS_OFFSET", "0"))
 # Priority: CLI Arg > Env Var > Default (45)
 LEVERAGE = args.leverage if args.leverage is not None else int(os.environ.get('LEVERAGE', '45'))
@@ -199,13 +209,22 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
             # 1. Fetch candles
             data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=1000)
             if not data_list:
-                time.sleep(15)
+                # logger.debug(f"[{symbol}] No data, skipping...")
+                time.sleep(5) # Reduced sleep
                 continue
 
             current_price = data_list[-1]['close']
             latest_time = data_list[-1]['timestamp']
 
-            # 2. Calculate indicators + signals
+            # 2. Check for Manual Force Open BEFORE indicator calculation
+            if not exchange.is_in_position:
+                if symbol in manual_open_requests:
+                    side = manual_open_requests.pop(symbol)
+                    logger.info(f"[{symbol}] Manual Force Open: {side}")
+                    try_open_position(symbol, side, current_price, exchange, data_loader, signal_intel, notifier, latest_time, provider="Manual Force")
+                    # If trade successful, it will be in position in the next cycle
+
+            # 3. Calculate indicators + signals
             try:
                 data_list = strategy.calculate_indicators(data_list)
                 data_list = strategy.generate_signals(data_list)
@@ -221,7 +240,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
             latest_signal = data_list[-1]['signal']
             sma = data_list[-1].get('SMA', current_price)
 
-            # 3. Unrealized PnL (net of open fee + estimated close fee)
+            # 4. Unrealized PnL (net of open fee + estimated close fee)
             upnl_gross = exchange.get_unrealized_pnl(current_price)
             
             # 3b. Real-time Liquidation Check
@@ -395,7 +414,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
             # 4. Update Market Intelligence periodically
             signal_intel.update_market_intelligence()
 
-            # 5. Open new position
+            # 5. Open new position (Technical Signals)
             if not exchange.is_in_position and latest_signal in ['LONG', 'SHORT']:
                 try_open_position(symbol, latest_signal, current_price, exchange, data_loader, signal_intel, notifier, latest_time)
 
@@ -408,9 +427,10 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel)
 def try_open_position(symbol, side, current_price, exchange, data_loader, signal_intel, notifier, timestamp, provider=None):
     """Shared logic for opening a position from any source (technical or external)."""
     with active_trades_lock:
-        # 1. Filter Check (Signal Intel)
-        if not signal_intel.filter_signal(symbol, side, provider=provider, min_score=0.7):
-            return False
+        # 1. Filter Check (Signal Intel) - IGNORE if manual force
+        if provider != "Manual Force":
+            if not signal_intel.filter_signal(symbol, side, provider=provider, min_score=0.7):
+                return False
 
         # 2. General Limits
         if not allow_new_trades["value"]:
@@ -422,11 +442,14 @@ def try_open_position(symbol, side, current_price, exchange, data_loader, signal
             return False
 
         if symbol in active_trades:
+            logger.warning(f"[{symbol}] Already in active_trades tracker. Skipping.")
             return False
 
         # 3. Market Info for sizing
         info = data_loader.get_symbol_info(symbol)
-        if not info: return False
+        if not info: 
+            logger.error(f"[{symbol}] Could not get symbol info for sizing.")
+            return False
         
         step_size = info.get('step_size', 0.001)
         min_notional = info.get('min_notional', 5.0)
@@ -447,7 +470,9 @@ def try_open_position(symbol, side, current_price, exchange, data_loader, signal
             # If partition is too small to trade, use a bigger chunk (up to 50% of balance)
             capital_to_risk = max(partition, min(current_bal * 0.5, min_required_margin * 1.2))
 
-        if capital_to_risk < 0.10: return False
+        if capital_to_risk < 0.10: 
+            logger.error(f"[{symbol}] Insufficient capital to risk (${capital_to_risk:.2f}).")
+            return False
 
         # Calculate exact leverage needed for $3 balance
         # If balance is $3 and min_notional is $5, we need at least 1.66x leverage.
@@ -466,6 +491,9 @@ def try_open_position(symbol, side, current_price, exchange, data_loader, signal
         raw_size = target_notional / current_price
         size = data_loader.round_step_size(raw_size, step_size)
         
+        # DEBUG LOGGING (Using INFO for visibility)
+        logger.info(f"[{symbol}] Sizing Debug: target_notional=${target_notional:.2f}, raw_size={raw_size:.8f}, step_size={step_size}, rounded_size={size}")
+        
         # Final validation
         if (size * current_price) < min_notional:
             # Try one last push: increase leverage if possible
@@ -478,9 +506,12 @@ def try_open_position(symbol, side, current_price, exchange, data_loader, signal
         # Detailed logging for user visibility
         logger.info(f"[{symbol}] Low-Cap Sizing: Min Notional ${min_notional} | Using {actual_leverage}x leverage for ${capital_to_risk:.2f} capital")
 
-        if size <= 0: return False
+        if size <= 0: 
+            logger.error(f"[{symbol}] Calculated size is zero. Notional: ${target_notional:.2f}, Price: ${current_price:.4f}")
+            return False
 
         # 5. Execute
+        exchange.leverage = actual_leverage # CRITICAL: Ensure paper exchange uses the same leverage for margin calculation
         success = exchange.execute_market_order(side, size, current_price, timestamp)
         if success:
             active_trades[symbol] = datetime.utcnow()
@@ -655,7 +686,7 @@ def run_paper_trading():
 
     global args
     # --- Initialize Components ---
-    data_loader = DataLoader(exchange_id='binanceusdm', testnet=TESTNET)
+    data_loader = DataLoader(exchange_id='mexc', testnet=TESTNET) # Use MEXC for data fetching to avoid Binance geo-blocks
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     ai_brain = AIBrain(GEMINI_API_KEY) if AIBrain and GEMINI_API_KEY else None
     signal_intel = SignalIntelligence(ai_brain=ai_brain)
@@ -663,18 +694,7 @@ def run_paper_trading():
     dashboard_state["use_real_exchange"] = USE_REAL_EXCHANGE
     global_account = PaperAccount(initial_capital=INITIAL_CAPITAL, log_file=TRADE_LOG_FILE)
 
-    # 1. Fetch top symbols dynamically
-    print(f"DIAGNOSTIC: TOP_N_SYMBOLS={TOP_N_SYMBOLS}, MIN_VOLUME_USD={MIN_VOLUME_USD}, SYMBOLS_OFFSET={SYMBOLS_OFFSET}", flush=True)
-    logger.info(f"Fetching top Binance Futures symbols (n={TOP_N_SYMBOLS}, offset={SYMBOLS_OFFSET})...")
-    symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD, offset=SYMBOLS_OFFSET)
-    print(f"DIAGNOSTIC: Fetched {len(symbols)} symbols", flush=True)
-    logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
-
-    # 0. Load persisted state
-    load_bot_state()
-    sync_active_trades(global_account, MAX_CONCURRENT_TRADES)
-
-    # 1. Start Dashboard
+    # 1. Start Dashboard EARLY (so user can see bot is alive even if fetching symbols hangs)
     dashboard_thread = threading.Thread(
         target=run_dashboard, 
         kwargs={
@@ -688,17 +708,27 @@ def run_paper_trading():
     dashboard_thread.start()
     logger.info(f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}")
 
-    # 3. Start Telegram Listener
+    # 3. Start Telegram Listener & External Watcher EARLY
     tg_thread = threading.Thread(target=telegram_listener, args=(notifier, ai_brain), daemon=True)
     tg_thread.start()
 
-    # 4. Start External Signal Watcher
     ext_thread = threading.Thread(
         target=external_signal_loop, 
         args=(signal_loader, signal_intel, data_loader, notifier, global_account), 
         daemon=True
     )
     ext_thread.start()
+
+    # 2. Fetch top symbols dynamically
+    print(f"DIAGNOSTIC: TOP_N_SYMBOLS={TOP_N_SYMBOLS}, MIN_VOLUME_USD={MIN_VOLUME_USD}, SYMBOLS_OFFSET={SYMBOLS_OFFSET}", flush=True)
+    logger.info(f"Fetching top Futures symbols (n={TOP_N_SYMBOLS}, offset={SYMBOLS_OFFSET})...")
+    symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD, offset=SYMBOLS_OFFSET)
+    print(f"DIAGNOSTIC: Fetched {len(symbols)} symbols", flush=True)
+    logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
+
+    # 0. Load persisted state
+    load_bot_state()
+    sync_active_trades(global_account, MAX_CONCURRENT_TRADES)
 
     # 4. Send startup notification
     safe_send_message(notifier,
@@ -897,9 +927,11 @@ def run_paper_trading():
 
             # -- Handle Reset Account Request --
             if reset_account_requested[0]:
+                RESET_BAL = 3.00 # Default reset balance as per user request
                 with global_account.lock:
-                    global_account.cash = INITIAL_CAPITAL
+                    global_account.cash = RESET_BAL
                     global_account.trade_history = []
+                    dashboard_state["initial_capital"] = RESET_BAL
                     if os.path.exists(TRADE_LOG_FILE):
                         try:
                             with open(TRADE_LOG_FILE, "w") as f:
@@ -912,8 +944,8 @@ def run_paper_trading():
                     active_trades.clear()
                 
                 reset_account_requested[0] = False
-                logger.warning(f"♻️ ACCOUNT RESET to ${INITIAL_CAPITAL:.2f} requested from dashboard!")
-                safe_send_message(notifier, f"♻️ *ACCOUNT RESET*\nBalance is now ${INITIAL_CAPITAL:.2f} USDT. All history cleared. Any stuck trades will be closed.")
+                logger.warning(f"♻️ ACCOUNT RESET to ${RESET_BAL:.2f} requested from dashboard!")
+                safe_send_message(notifier, f"♻️ *ACCOUNT RESET*\nBalance is now ${RESET_BAL:.2f} USDT. All history cleared. Any stuck trades will be closed.")
 
             time.sleep(5)
 

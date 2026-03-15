@@ -4,15 +4,19 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py --strategy scalper70 --leverage 20 --capital 3 --max_trades 15 --port $PORT
+    startCommand: python main.py --strategy smart_money --leverage 20 --capital 3 --max_trades 15 --port $PORT
     envVars:
       - key: PORT
-        value: 5000
+        value: 10000
       - key: EXCHANGE
         value: bybit
       - key: BYBIT_API_KEY
         sync: false
       - key: BYBIT_API_SECRET
+        sync: false
+      - key: MEXC_API_KEY
+        sync: false
+      - key: MEXC_API_SECRET
         sync: false
       - key: USE_REAL_EXCHANGE
         value: "true"
@@ -26,3 +30,9 @@ services:
         value: "15"
       - key: TAKE_PROFIT_PCT
         value: "0.03"
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false

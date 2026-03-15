@@ -6,24 +6,12 @@ from flask import Flask, jsonify, render_template_string, request
 import json
 import os
 import requests as req_lib
+from bot.shared_state import (
+    dashboard_state, manual_close_requests, manual_open_requests,
+    set_entries_state, clear_history_requested, panic_close_all_requested, reset_account_requested
+)
 
 app = Flask(__name__)
-
-dashboard_state = {
-    "bot_status": "STARTING",
-    "entries_allowed": True,
-    "last_update": "",
-    "symbols": {},
-    "profile_name": "default",
-    "log_file": "trade_log.json",
-    "initial_capital": 3.00
-}
-
-manual_close_requests = set()
-set_entries_state = [None]  # None = no request, True = enable, False = disable
-clear_history_requested = [False]
-panic_close_all_requested = [False]
-reset_account_requested = [False]
 
 TOP_SYMBOLS = [
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT',
@@ -202,6 +190,7 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
         </div>
         <button onclick="closeAllTrades()" style="background:#ff3b3b;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:bold;font-size:0.75rem;">🔴 CLOSE ALL</button>
         <button onclick="resetAccount()" style="background:#ff9800;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:bold;font-size:0.75rem;">♻️ RESET BAL</button>
+        <button onclick="resetEverything()" style="background:#d32f2f;color:white;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;font-weight:bold;font-size:0.75rem; box-shadow: 0 0 10px rgba(211,47,47,0.4);">🔥 RESET EVERYTHING</button>
         <div class="switch-wrapper">
             <label class="switch">
                 <input type="checkbox" id="entry-toggle-input" onchange="toggleEntries()">
@@ -334,6 +323,21 @@ async function requestManualClose(sym) {
     }
 }
 
+async function requestForceOpen(sym, side) {
+    if(!confirm('Force ' + side + ' for ' + sym + '? (Ignores indicators)')) return;
+    try {
+        const resp = await fetch('/api/force_open/' + sym + '/' + side, {method: 'POST'});
+        const data = await resp.json();
+        if(data.ok) {
+            alert('Force ' + side + ' requested for ' + sym);
+            closeModal();
+            refresh();
+        }
+    } catch(e) {
+        alert('Error forcing trade');
+    }
+}
+
 async function closeAllTrades() {
     if(!confirm('🚨 PANIC: Are you sure you want to close ALL active trades?')) return;
     try {
@@ -412,18 +416,10 @@ function updateWsSubscriptions() {
 }
 
 function initWS(initialSyms) {
-    ws = new WebSocket('wss://fstream.binance.com/ws');
-    ws.onopen = () => {
-        subscribedSyms = new Set(initialSyms);
-        ws.send(JSON.stringify({method: "SUBSCRIBE", params: initialSyms.map(s => s.toLowerCase() + '@ticker'), id: 1}));
-    };
-    ws.onmessage = (event) => {
-        const msg = JSON.parse(event.data);
-        if (msg.e === '24hrTicker') {
-            onLivePrice(msg.s, parseFloat(msg.c));
-        }
-    };
-    ws.onclose = () => { ws = null; subscribedSyms.clear(); };
+    // Disabled Binance WebSocket as it is restricted in some regions (Kyrgyzstan/US).
+    // The dashboard will fall back to polling the bot state every 10s for updates.
+    console.log("WebSocket disabled to ensure compatibility in restricted regions.");
+    ws = null;
 }
 
 function onLivePrice(sym, price) {
@@ -547,7 +543,7 @@ async function refresh() {
         const availableCash = d.realized_cash != null ? d.realized_cash : STARTING_CAPITAL;
         const totalUpnl = d.total_upnl != null ? d.total_upnl : 0;
         const openCount = d.open_trade_count != null ? d.open_trade_count : 0;
-        const maxTrades = d.max_trades != null ? d.max_trades : 3;
+        const maxTrades = d.max_trades != null ? d.max_trades : 15;
         const liveBalChg = liveBal - STARTING_CAPITAL;
 
         document.getElementById('s-bal').textContent = '$'+liveBal.toFixed(4);
@@ -660,7 +656,7 @@ function renderSymbols() {
 
 function drawMiniChart(sym) {
     if (miniCharts[sym]) return;
-    const tvSymbol = "BINANCE:" + sym; // Ensures it uses Binance data natively
+    const tvSymbol = "BYBIT:" + sym + ".P"; // Use Bybit Perpetual data for better regional access
     miniCharts[sym] = new TradingView.widget({
         "container_id": "tv_widget_"+sym,
         "width": "100%",
@@ -695,21 +691,15 @@ function updateModal(sym, quiet=false) {
         const el = document.getElementById('modal-chart');
         el.innerHTML = '';
         
-        // Mount full-featured advanced Binance-style TradingView widget
-        // Binance uses weird names for Gold pegged assets. 
-        // TradingView uses the Spot equivalents without the .P for these.
-        let tvSymbol = "";
+        // Mount full-featured advanced Bybit-style TradingView widget
+        let tvSymbol = "BYBIT:" + sym + ".P";
         const tvMap = {
-            "GOLD(PAXG)USDT": "BINANCE:PAXGUSDT", 
-            "GOLD(XAUT)USDT": "BINANCE:XAUTUSDT"  
+            "GOLD(PAXG)USDT": "BYBIT:PAXGUSDT.P", 
+            "GOLD(XAUT)USDT": "BYBIT:XAUTUSDT.P"  
         };
         
         if (tvMap[sym]) {
             tvSymbol = tvMap[sym];
-        } else {
-            // General fallback: remove parenthetical text
-            let cleanSym = sym.replace(/\([^)]*\)/g, '');
-            tvSymbol = "BINANCE:" + cleanSym;
         }
         
         modalChart = new TradingView.widget({
@@ -791,8 +781,13 @@ function updateModal(sym, quiet=false) {
              updateLiveDom(sym, s, s.price);
         }
     } else {
-        tradeEl.style.display = 'none';
-        tradeEl.innerHTML = '';
+        tradeEl.style.display = '';
+        tradeEl.innerHTML = `
+            <div style="font-weight:700;margin-bottom:10px;color:var(--muted)">⏸️ NO POSITION (FLAT)</div>
+            <div style="display:flex;gap:10px;margin-top:10px">
+                <button onclick="requestForceOpen('${sym}', 'LONG')" style="flex:1;padding:12px;background:var(--green);color:var(--bg);border:none;border-radius:10px;font-weight:700;cursor:pointer;">🚀 FORCE LONG</button>
+                <button onclick="requestForceOpen('${sym}', 'SHORT')" style="flex:1;padding:12px;background:var(--red);color:white;border:none;border-radius:10px;font-weight:700;cursor:pointer;">📉 FORCE SHORT</button>
+            </div>`;
     }
 }
 
@@ -910,6 +905,14 @@ function resetAccount() {
     }
 }
 
+function resetEverything() {
+    if(confirm("🔥 RESET EVERYTHING: This will close all trades, wipe history, and reset your balance. Are you 100% sure?")) {
+        fetch('/api/reset_account', {method: 'POST'})
+        .then(r => r.json())
+        .then(data => alert(data.msg || "System reset initiated"));
+    }
+}
+
 refresh();
 setInterval(refresh, 10000);
 </script>
@@ -951,7 +954,7 @@ def api_state():
         "realized_cash": dashboard_state.get("realized_cash"),    # closed-trade cash only
         "total_upnl": dashboard_state.get("total_upnl"),          # sum of all open pos uPnL
         "open_trade_count": dashboard_state.get("open_trade_count", 0),
-        "max_trades": dashboard_state.get("max_trades", 3),
+        "max_trades": dashboard_state.get("max_trades", 15),
         "initial_capital": dashboard_state.get("initial_capital", 10.0),
         "entries_allowed": dashboard_state.get("entries_allowed", True),
     })
@@ -967,6 +970,12 @@ def close_trade(symbol):
     manual_close_requests.add(symbol)
     return jsonify({"ok": True, "msg": f"Requested close for {symbol}"})
 
+@app.route('/api/force_open/<symbol>/<side>', methods=['POST'])
+def force_open(symbol, side):
+    print(f"DEBUG: Manual Force {side.upper()} requested for {symbol}")
+    manual_open_requests[symbol] = side.upper()
+    return jsonify({"ok": True, "msg": f"Forcing {side.upper()} for {symbol}"})
+
 @app.route('/api/close_all', methods=['POST'])
 def close_all():
     panic_close_all_requested[0] = True
@@ -975,8 +984,8 @@ def close_all():
 @app.route('/api/reset_account', methods=['POST'])
 def reset_account():
     reset_account_requested[0] = True
-    capital = dashboard_state.get("initial_capital", 10.0)
-    return jsonify({"ok": True, "msg": f"Account reset requested! Wiping history and setting balance to ${capital:.2f}."})
+    # Default reset balance is 3.00 as per user request
+    return jsonify({"ok": True, "msg": "Account reset requested! Wiping history and setting balance to $3.00."})
 
 @app.route('/api/set_entries', methods=['POST'])
 def set_entries():

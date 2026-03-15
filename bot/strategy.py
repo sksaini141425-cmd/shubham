@@ -149,12 +149,451 @@ def calculate_bollinger_bands(prices, period=20, std_dev_multiplier=2.0):
         
     return upper_band, middle_band, lower_band
 
+def calculate_adx(data_list, period=14):
+    if len(data_list) < period * 2:
+        return [None] * len(data_list)
+        
+    plus_dm = [0.0]
+    minus_dm = [0.0]
+    tr = [0.0]
+    
+    for i in range(1, len(data_list)):
+        high_diff = data_list[i]['high'] - data_list[i-1]['high']
+        low_diff = data_list[i-1]['low'] - data_list[i]['low']
+        
+        if high_diff > low_diff and high_diff > 0:
+            plus_dm.append(high_diff)
+        else:
+            plus_dm.append(0.0)
+            
+        if low_diff > high_diff and low_diff > 0:
+            minus_dm.append(low_diff)
+        else:
+            minus_dm.append(0.0)
+            
+        h, l, pc = data_list[i]['high'], data_list[i]['low'], data_list[i-1]['close']
+        tr.append(max(h - l, abs(h - pc), abs(l - pc)))
+        
+    def smooth(data, p):
+        smoothed = [None] * p
+        first_avg = sum(data[1:p+1]) / p
+        smoothed.append(first_avg)
+        for j in range(p + 1, len(data)):
+            val = (smoothed[-1] * (p - 1) + data[j]) / p
+            smoothed.append(val)
+        return smoothed
+        
+    smooth_tr = smooth(tr, period)
+    smooth_plus_dm = smooth(plus_dm, period)
+    smooth_minus_dm = smooth(minus_dm, period)
+    
+    plus_di = []
+    minus_di = []
+    dx = []
+    
+    for i in range(len(smooth_tr)):
+        if smooth_tr[i] is None or smooth_tr[i] == 0:
+            plus_di.append(None)
+            minus_di.append(None)
+            dx.append(None)
+        else:
+            p_di = 100 * (smooth_plus_dm[i] / smooth_tr[i])
+            m_di = 100 * (smooth_minus_dm[i] / smooth_tr[i])
+            plus_di.append(p_di)
+            minus_di.append(m_di)
+            
+            if p_di + m_di == 0:
+                dx.append(0)
+            else:
+                dx.append(100 * abs(p_di - m_di) / (p_di + m_di))
+                
+    adx = [None] * (period * 2 - 1)
+    valid_dx = [d for d in dx if d is not None]
+    if len(valid_dx) < period:
+        return [None] * len(data_list)
+        
+    first_adx = sum(valid_dx[:period]) / period
+    adx.append(first_adx)
+    
+    start_idx = len(adx)
+    for i in range(start_idx, len(dx)):
+        new_adx = (adx[-1] * (period - 1) + dx[i]) / period
+        adx.append(new_adx)
+        
+    return adx
+
 class SmartMoneyStrategy(BaseStrategy):
     def __init__(self, leverage=45):
         super().__init__(leverage=leverage)
 
     def calculate_indicators(self, data_list):
         if not data_list: return data_list
+        closes = [d['close'] for d in data_list]
+        
+        upper, middle, lower = calculate_bollinger_bands(closes, 20, 2.0)
+        emas_200 = calculate_ema(closes, 200)
+        rsi = calculate_rsi(data_list, 14)
+        macd, signal, hist = calculate_macd(data_list)
+        atrs = calculate_atr(data_list, 14)
+        
+        for i, d in enumerate(data_list):
+            d['BB_Upper'] = upper[i]
+            d['BB_Lower'] = lower[i]
+            d['BB_Middle'] = middle[i]
+            d['EMA_200'] = emas_200[i]
+            d['RSI'] = rsi[i]
+            d['MACD_Hist'] = hist[i]
+            d['ATR'] = atrs[i]
+        return data_list
+
+    def generate_signals(self, data_list):
+        if len(data_list) < 200: return data_list
+        
+        for i in range(1, len(data_list)):
+            d = data_list[i]
+            price = d['close']
+            ema200 = d.get('EMA_200')
+            rsi = d.get('RSI')
+            bb_upper = d.get('BB_Upper')
+            bb_lower = d.get('BB_Lower')
+            
+            d['signal'] = 'NONE'
+            if None in [ema200, rsi, bb_upper, bb_lower]: continue
+            
+            # LONG: Price < BB Lower AND RSI < 45 AND Price > EMA 200 (Pullback in uptrend)
+            if price < bb_lower and rsi < 45 and price > ema200:
+                d['signal'] = 'LONG'
+            
+            # SHORT: Price > BB Upper AND RSI > 55 AND Price < EMA 200 (Pullback in downtrend)
+            elif price > bb_upper and rsi > 55 and price < ema200:
+                d['signal'] = 'SHORT'
+                
+        return data_list
+
+class SmartMoneyProStrategy(BaseStrategy):
+    """
+    Enhanced version of SmartMoney strategy designed for 70%+ win rate.
+    Uses multi-indicator confirmation (ADX, Vol, Dual EMA) to filter out fakeouts.
+    """
+    def __init__(self, leverage=25):
+        super().__init__(leverage=leverage)
+
+    def calculate_indicators(self, data_list):
+        if not data_list: return data_list
+        closes = [d['close'] for d in data_list]
+        volumes = [d['volume'] for d in data_list]
+        
+        upper, middle, lower = calculate_bollinger_bands(closes, 20, 2.0)
+        ema50 = calculate_ema(closes, 50)
+        ema200 = calculate_ema(closes, 200)
+        rsi = calculate_rsi(data_list, 14)
+        adx = calculate_adx(data_list, 14)
+        vol_sma = calculate_sma(volumes, 20)
+        
+        for i, d in enumerate(data_list):
+            d['BB_Upper'] = upper[i]
+            d['BB_Lower'] = lower[i]
+            d['EMA_50'] = ema50[i]
+            d['EMA_200'] = ema200[i]
+            d['RSI'] = rsi[i]
+            d['ADX'] = adx[i]
+            d['VOL_SMA'] = vol_sma[i]
+        return data_list
+
+    def generate_signals(self, data_list):
+        if len(data_list) < 200: return data_list
+        
+        for i in range(1, len(data_list)):
+            d = data_list[i]
+            price = d['close']
+            vol = d['volume']
+            ema50 = d.get('EMA_50')
+            ema200 = d.get('EMA_200')
+            rsi = d.get('RSI')
+            adx = d.get('ADX')
+            bb_upper = d.get('BB_Upper')
+            bb_lower = d.get('BB_Lower')
+            vol_sma = d.get('VOL_SMA')
+            
+            d['signal'] = 'NONE'
+            if None in [ema50, ema200, rsi, adx, bb_upper, bb_lower, vol_sma]: continue
+            
+            # Trend Strength Filter
+            is_strong_trend = adx > 25
+            is_high_volume = vol > (vol_sma * 1.2)
+            
+            # LONG: 
+            # 1. Price above 200 EMA (Long term uptrend)
+            # 2. 50 EMA above 200 EMA (Golden state)
+            # 3. Price touches Lower BB (Pullback)
+            # 4. RSI < 40 (Deep enough pullback)
+            # 5. Strong ADX & High Volume (Force behind the bounce)
+            if (price > ema200 and ema50 > ema200 and 
+                price < bb_lower and rsi < 40 and 
+                is_strong_trend and is_high_volume):
+                d['signal'] = 'LONG'
+            
+            # SHORT:
+            # 1. Price below 200 EMA (Long term downtrend)
+            # 2. 50 EMA below 200 EMA (Death state)
+            # 3. Price touches Upper BB (Pullback)
+            # 4. RSI > 60 (Deep enough pullback)
+            # 5. Strong ADX & High Volume (Force behind the drop)
+            elif (price < ema200 and ema50 < ema200 and 
+                  price > bb_upper and rsi > 60 and 
+                  is_strong_trend and is_high_volume):
+                d['signal'] = 'SHORT'
+                
+        return data_list
+
+class SmartMoneyUltraStrategy(BaseStrategy):
+    """
+    Ultra-strict version of the strategy designed for 70%+ win rate.
+    Uses 3-EMA stacking, ADX slope, and Volume spikes to find only 'perfect' setups.
+    """
+    def __init__(self, leverage=20):
+        super().__init__(leverage=leverage)
+
+    def calculate_indicators(self, data_list):
+        if not data_list: return data_list
+        closes = [d['close'] for d in data_list]
+        volumes = [d['volume'] for d in data_list]
+        
+        upper, middle, lower = calculate_bollinger_bands(closes, 20, 2.0)
+        ema20 = calculate_ema(closes, 20)
+        ema50 = calculate_ema(closes, 50)
+        ema200 = calculate_ema(closes, 200)
+        rsi = calculate_rsi(data_list, 14)
+        adx = calculate_adx(data_list, 14)
+        vol_sma = calculate_sma(volumes, 20)
+        
+        for i, d in enumerate(data_list):
+            d['BB_Upper'] = upper[i]
+            d['BB_Lower'] = lower[i]
+            d['EMA_20'] = ema20[i]
+            d['EMA_50'] = ema50[i]
+            d['EMA_200'] = ema200[i]
+            d['RSI'] = rsi[i]
+            d['ADX'] = adx[i]
+            d['VOL_SMA'] = vol_sma[i]
+        return data_list
+
+    def generate_signals(self, data_list):
+        if len(data_list) < 200: return data_list
+        
+        for i in range(1, len(data_list)):
+            d = data_list[i]
+            price, vol = d['close'], d['volume']
+            
+            ema50, ema200 = d.get('EMA_50'), d.get('EMA_200')
+            rsi, adx = d.get('RSI'), d.get('ADX')
+            bb_upper, bb_lower = d.get('BB_Upper'), d.get('BB_Lower')
+            vol_sma = d.get('VOL_SMA')
+            
+            d['signal'] = 'NONE'
+            if None in [ema50, ema200, rsi, adx, bb_upper, bb_lower, vol_sma]: continue
+            
+            # BALANCED FILTERS FOR HIGH WIN RATE
+            is_uptrend = price > ema200 and ema50 > ema200
+            is_downtrend = price < ema200 and ema50 < ema200
+            is_strong_trend = adx > 20
+            is_high_vol = vol > vol_sma # At least average volume
+            
+            # LONG: Uptrend + Oversold Pullback + Vol
+            if is_uptrend and is_strong_trend and is_high_vol:
+                if price < bb_lower or rsi < 35:
+                    d['signal'] = 'LONG'
+            
+            # SHORT: Downtrend + Overbought Pullback + Vol
+            elif is_downtrend and is_strong_trend and is_high_vol:
+                if price > bb_upper or rsi > 65:
+                    d['signal'] = 'SHORT'
+                
+        return data_list
+
+class SmartMoney70Strategy(BaseStrategy):
+    """
+    Experimental high-win-rate strategy (Target 70%).
+    Focuses on Trend Breakouts with high momentum.
+    """
+    def __init__(self, leverage=20):
+        super().__init__(leverage=leverage)
+
+    def calculate_indicators(self, data_list):
+        if not data_list: return data_list
+        closes = [d['close'] for d in data_list]
+        
+        upper, middle, lower = calculate_bollinger_bands(closes, 20, 2.0)
+        ema50 = calculate_ema(closes, 50)
+        ema200 = calculate_ema(closes, 200)
+        rsi = calculate_rsi(data_list, 14)
+        macd, signal, hist = calculate_macd(data_list)
+        adx = calculate_adx(data_list, 14)
+        
+        for i, d in enumerate(data_list):
+            d['BB_Upper'] = upper[i]
+            d['BB_Middle'] = middle[i]
+            d['BB_Lower'] = lower[i]
+            d['EMA_50'] = ema50[i]
+            d['EMA_200'] = ema200[i]
+            d['RSI'] = rsi[i]
+            d['MACD_Hist'] = hist[i]
+            d['ADX'] = adx[i]
+        return data_list
+
+    def generate_signals(self, data_list):
+        if len(data_list) < 200: return data_list
+        
+        for i in range(1, len(data_list)):
+            d, prev = data_list[i], data_list[i-1]
+            price = d['close']
+            prev_price = prev['close']
+            
+            ema50, ema200 = d.get('EMA_50'), d.get('EMA_200')
+            rsi, adx = d.get('RSI'), d.get('ADX')
+            bb_middle = d.get('BB_Middle')
+            macd_hist = d.get('MACD_Hist')
+            prev_macd_hist = prev.get('MACD_Hist', 0)
+            
+            d['signal'] = 'NONE'
+            if None in [ema50, ema200, rsi, adx, bb_middle, macd_hist]: continue
+            
+            # Trend Strength
+            is_strong_trend = adx > 30
+            is_increasing_mom = macd_hist > prev_macd_hist
+            
+            # LONG:
+            # 1. Price above 200 EMA
+            # 2. 50 EMA above 200 EMA
+            # 3. Price crosses ABOVE BB Middle (Breakout of a consolidation)
+            # 4. RSI > 50 (Momentum confirmed)
+            # 5. Increasing MACD Histogram
+            if (price > ema200 and ema50 > ema200 and 
+                price > bb_middle and prev_price <= bb_middle and
+                rsi > 50 and is_strong_trend and is_increasing_mom):
+                d['signal'] = 'LONG'
+            
+            # SHORT:
+            elif (price < ema200 and ema50 < ema200 and 
+                  price < bb_middle and prev_price >= bb_middle and
+                  rsi < 50 and is_strong_trend and is_increasing_mom):
+                d['signal'] = 'SHORT'
+                
+        return data_list
+
+class SmartMoneyPro70Strategy(BaseStrategy):
+    """
+    Final optimized strategy for high win rate.
+    Combines Trend + Momentum + Volume.
+    """
+    def __init__(self, leverage=20):
+        super().__init__(leverage=leverage)
+
+    def calculate_indicators(self, data_list):
+        if not data_list: return data_list
+        closes = [d['close'] for d in data_list]
+        volumes = [d['volume'] for d in data_list]
+        
+        upper, middle, lower = calculate_bollinger_bands(closes, 20, 2.0)
+        ema50 = calculate_ema(closes, 50)
+        ema200 = calculate_ema(closes, 200)
+        rsi = calculate_rsi(data_list, 14)
+        adx = calculate_adx(data_list, 14)
+        vol_sma = calculate_sma(volumes, 20)
+        
+        for i, d in enumerate(data_list):
+            d['BB_Upper'] = upper[i]
+            d['BB_Middle'] = middle[i]
+            d['EMA_50'] = ema50[i]
+            d['EMA_200'] = ema200[i]
+            d['RSI'] = rsi[i]
+            d['ADX'] = adx[i]
+            d['VOL_SMA'] = vol_sma[i]
+        return data_list
+
+    def generate_signals(self, data_list):
+        if len(data_list) < 200: return data_list
+        
+        for i in range(1, len(data_list)):
+            d = data_list[i]
+            price, vol = d['close'], d['volume']
+            ema50, ema200 = d.get('EMA_50'), d.get('EMA_200')
+            rsi, adx = d.get('RSI'), d.get('ADX')
+            bb_upper = d.get('BB_Upper')
+            bb_lower = d.get('BB_Lower')
+            vol_sma = d.get('VOL_SMA')
+            
+            d['signal'] = 'NONE'
+            if None in [ema50, ema200, rsi, adx, bb_upper, bb_lower, vol_sma]: continue
+            
+            # HIGH PROBABILITY FILTERS
+            is_strong_uptrend = price > ema200 and ema50 > ema200 and adx > 25
+            is_strong_downtrend = price < ema200 and ema50 < ema200 and adx > 25
+            is_high_vol = vol > vol_sma
+            
+            # LONG: Strong trend + Momentum burst
+            if is_strong_uptrend and is_high_vol and rsi > 55 and price > d['BB_Middle']:
+                # Ensure we aren't already overbought
+                if rsi < 70:
+                    d['signal'] = 'LONG'
+            
+            # SHORT: Strong trend + Momentum drop
+            elif is_strong_downtrend and is_high_vol and rsi < 45 and price < d['BB_Middle']:
+                if rsi > 30:
+                    d['signal'] = 'SHORT'
+                
+        return data_list
+
+class SmartMoneyDynamicStrategy(BaseStrategy):
+    """
+    Dynamic strategy designed for maximum win rate.
+    Uses EMA crossovers for entry/exit and ADX for trend strength.
+    """
+    def __init__(self, leverage=20):
+        super().__init__(leverage=leverage)
+
+    def calculate_indicators(self, data_list):
+        if not data_list: return data_list
+        closes = [d['close'] for d in data_list]
+        
+        ema9 = calculate_ema(closes, 9)
+        ema21 = calculate_ema(closes, 21)
+        ema200 = calculate_ema(closes, 200)
+        rsi = calculate_rsi(data_list, 14)
+        adx = calculate_adx(data_list, 14)
+        
+        for i, d in enumerate(data_list):
+            d['EMA_9'] = ema9[i]
+            d['EMA_21'] = ema21[i]
+            d['EMA_200'] = ema200[i]
+            d['RSI'] = rsi[i]
+            d['ADX'] = adx[i]
+        return data_list
+
+    def generate_signals(self, data_list):
+        if len(data_list) < 200: return data_list
+        
+        for i in range(1, len(data_list)):
+            d, prev = data_list[i], data_list[i-1]
+            ema9, ema21, ema200 = d.get('EMA_9'), d.get('EMA_21'), d.get('EMA_200')
+            p_ema9, p_ema21 = prev.get('EMA_9'), prev.get('EMA_21')
+            adx = d.get('ADX')
+            
+            d['signal'] = 'NONE'
+            if None in [ema9, ema21, ema200, p_ema9, p_ema21, adx]: continue
+            
+            # Trend Strength Filter
+            is_trending = adx > 20
+            
+            # LONG: EMA 9 crosses ABOVE EMA 21 while above EMA 200
+            if ema9 > ema21 and p_ema9 <= p_ema21 and d['close'] > ema200 and is_trending:
+                d['signal'] = 'LONG'
+            
+            # SHORT: EMA 9 crosses BELOW EMA 21 while below EMA 200
+            elif ema9 < ema21 and p_ema9 >= p_ema21 and d['close'] < ema200 and is_trending:
+                d['signal'] = 'SHORT'
+                
+        return data_list
 
 class DiamondSniperStrategy(BaseStrategy):
     """
@@ -274,36 +713,6 @@ class HyperScalper25Strategy(BaseStrategy):
             elif price < ema200 and ema9 < ema21 and prev_d.get('EMA_9', 0) >= prev_d.get('EMA_21', 0) and rsi > 40:
                 d['signal'] = 'SHORT'
                 
-        return data_list
-        closes = [d['close'] for d in data_list]
-        emas_200 = calculate_ema(closes, 200)
-        atrs = calculate_atr(data_list, 14)
-        rsi = calculate_rsi(data_list, 14)
-        macd, signal, hist = calculate_macd(data_list)
-        upper, middle, lower = calculate_bollinger_bands(closes, 20)
-        
-        for i, d in enumerate(data_list):
-            d['EMA_200'] = emas_200[i]
-            d['ATR'] = atrs[i]
-            d['RSI'] = rsi[i]
-            d['MACD_Hist'] = hist[i]
-            d['BB_Upper'] = upper[i]
-            d['BB_Lower'] = lower[i]
-        return data_list
-
-    def generate_signals(self, data_list):
-        if len(data_list) < 20: return data_list
-        for i in range(1, len(data_list)):
-            d, prev_d = data_list[i], data_list[i-1]
-            price, rsi = d['close'], d.get('RSI')
-            macd_hist, prev_macd_hist = d.get('MACD_Hist'), prev_d.get('MACD_Hist')
-            ema200 = d.get('EMA_200')
-            d['signal'] = 'NONE'
-            if None in [rsi, macd_hist, prev_macd_hist, ema200]: continue
-            if price > ema200 and rsi < 35 and macd_hist > prev_macd_hist:
-                d['signal'] = 'LONG'
-            elif price < ema200 and rsi > 65 and macd_hist < prev_macd_hist:
-                d['signal'] = 'SHORT'
         return data_list
 
 class RSDTraderStrategy(BaseStrategy):

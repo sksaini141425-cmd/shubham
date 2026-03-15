@@ -24,6 +24,7 @@ def run_bot():
     # We set TOP_N_SYMBOLS=10 to focus on the top 10 most liquid pairs
     os.environ['TOP_N_SYMBOLS'] = '10'
     os.environ['MIN_VOLUME_USD'] = '10000000' # Higher volume for reliability
+    os.environ['USE_REAL_EXCHANGE'] = 'false' # Ensure simulation mode is forced for this script
     
     cmd = [
         sys.executable, "main.py",
