@@ -297,60 +297,52 @@ let ws = null;
 let subscribedSyms = new Set();
 
 async function requestManualClose(sym) {
-    if(!confirm('Are you sure you want to close ' + sym + ' manually?')) return;
     try {
         const resp = await fetch('/api/close_trade/' + sym, {method: 'POST'});
         const data = await resp.json();
         if(data.ok) {
-            alert('Close requested for ' + sym);
             closeModal();
             refresh();
         }
     } catch(e) {
-        alert('Error requesting close');
+        console.error('Error requesting close');
     }
 }
 
 async function requestForceOpen(sym, side) {
-    if(!confirm('Force ' + side + ' for ' + sym + '? (Ignores indicators)')) return;
     try {
         const resp = await fetch('/api/force_open/' + sym + '/' + side, {method: 'POST'});
         const data = await resp.json();
         if(data.ok) {
-            alert('Force ' + side + ' requested for ' + sym);
             closeModal();
             refresh();
         }
     } catch(e) {
-        alert('Error forcing trade');
+        console.error('Error forcing trade');
     }
 }
 
 async function closeAllTrades() {
-    if(!confirm('🚨 PANIC: Are you sure you want to close ALL active trades?')) return;
     try {
         const resp = await fetch('/api/close_all', {method: 'POST'});
         const data = await resp.json();
         if(data.ok) {
-            alert('All trades closing...');
             refresh();
         }
     } catch(e) {
-        alert('Error closing all trades');
+        console.error('Error closing all trades');
     }
 }
 
 async function resetAccount() {
-    if(!confirm('♻️ RESET: This will clear history and reset balance to your starting capital. Proceed?')) return;
     try {
         const resp = await fetch('/api/reset_account', {method: 'POST'});
         const data = await resp.json();
         if(data.ok) {
-            alert('Account reset successful!');
             refresh();
         }
     } catch(e) {
-        alert('Error resetting account');
+        console.error('Error resetting account');
     }
 }
 
@@ -361,23 +353,21 @@ async function toggleEntries() {
     try {
         await fetch(`/api/set_entries?enabled=${isChecked}`, {method: 'POST'});
     } catch(e) {
-        alert('Error setting entries');
+        console.error('Error setting entries');
     }
 }
 
 async function clearHistory() {
-    if(!confirm('Are you sure you want to clear all trade history?')) return;
     try {
         const resp = await fetch('/api/clear_history', {method: 'POST'});
         const data = await resp.json();
         if (data.ok) {
-            alert(data.msg || 'History cleared!');
             refresh();
         } else {
-            alert('Error: ' + data.error);
+            console.error('Error: ' + data.error);
         }
     } catch(e) {
-        alert('Error clearing history');
+        console.error('Error clearing history');
     }
 }
 
@@ -877,28 +867,13 @@ function closeModal(e) {
     }
 }
 
-function closeAllTrades() {
-    if(confirm("🚨 Are you sure you want to close ALL active trades immediately?")) {
-        fetch('/api/close_all', {method: 'POST'})
-        .then(r => r.json())
-        .then(data => alert(data.msg || "Requested close all"));
-    }
-}
-
-function resetAccount() {
-    if(confirm("♻️ Are you sure you want to WIPE history and reset balance to starting capital?")) {
-        fetch('/api/reset_account', {method: 'POST'})
-        .then(r => r.json())
-        .then(data => alert(data.msg || "Account reset requested"));
-    }
-}
-
 function resetEverything() {
-    if(confirm("🔥 RESET EVERYTHING: This will close all trades, wipe history, and reset your balance. Are you 100% sure?")) {
-        fetch('/api/reset_account', {method: 'POST'})
-        .then(r => r.json())
-        .then(data => alert(data.msg || "System reset initiated"));
-    }
+    fetch('/api/reset_account', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        console.log("System reset initiated");
+        refresh();
+    });
 }
 
 refresh();
