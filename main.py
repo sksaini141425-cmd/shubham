@@ -217,59 +217,54 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
     while True:
         try:
             if not bot_running["value"]:
-                time.sleep(10)
+                time.sleep(1)
                 continue
 
-            # 1. IMMEDIATE Check for Manual Force Open (Before fetching all candles)
-            if not exchange.is_in_position:
-                if symbol in manual_open_requests:
+            # --- 1. INSTANT MANUAL CHECK (High Frequency) ---
+            # We check for manual open/close requests every 0.2 seconds.
+            # This ensures that when you click a button, it happens "instantly".
+            for _ in range(300): # 300 * 0.2s = 60s (One minute between technical scans)
+                if not bot_running["value"]: break
+                
+                # Check for Manual Force Open
+                if not exchange.is_in_position and symbol in manual_open_requests:
                     side = manual_open_requests.pop(symbol)
                     current_price = data_loader.fetch_ticker(symbol)
                     if current_price:
                         logger.info(f"[{symbol}] Manual Force Open: {side}")
                         try_open_position(symbol, side, current_price, exchange, data_loader, notifier, datetime.utcnow(), provider="Manual Force")
-                        # Skip full scan this cycle if we just opened manually
-                        time.sleep(1)
-                        continue
+                        break # Break wait to start next loop cycle
 
-            # 2. IMMEDIATE Check for Manual Force Close (Before fetching all candles)
-            if exchange.is_in_position:
-                if symbol in manual_close_requests:
+                # Check for Manual Force Close
+                if exchange.is_in_position and symbol in manual_close_requests:
                     current_price = data_loader.fetch_ticker(symbol)
                     if current_price:
                         close_reason = "Manual Exit via Dashboard 🖱️ (FORCE)"
                         logger.info(f"[{symbol}] {close_reason}")
-                        
                         gross_pnl = exchange.get_unrealized_pnl(current_price)
                         close_fee_cost = exchange.position_size * current_price * taker_fee
                         net_pnl = gross_pnl - close_fee_cost
                         entry_price = exchange.entry_price
                         notional = exchange.position_size * entry_price
                         net_pnl_pct = (net_pnl / notional * 100) if notional > 0 else 0
-
                         exchange.execute_market_order('CLOSE', exchange.position_size, current_price, datetime.utcnow())
                         with active_trades_lock:
                             active_trades.pop(symbol, None)
-                        
                         manual_close_requests.remove(symbol)
-                        
                         emoji = "✅" if net_pnl > 0 else "❌"
-                        msg = (
-                            f"{emoji} *{symbol} Trade Closed*\n"
-                            f"Reason: _{close_reason}_\n"
-                            f"Entry: `${entry_price:.4f}` → Exit: `${current_price:.4f}`\n"
-                            f"Net PnL (after fees): `{'+'if net_pnl>=0 else ''}{net_pnl:.6f} USDT` ({net_pnl_pct:+.2f}%)\n"
-                            f"Realized Balance: `${exchange.cash:.6f} USDT`\n"
-                            f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}"
-                        )
+                        msg = (f"{emoji} *{symbol} Trade Closed*\nReason: _{close_reason}_\nEntry: `${entry_price:.4f}` → Exit: `${current_price:.4f}`\n"
+                               f"Net PnL (after fees): `{'+'if net_pnl>=0 else ''}{net_pnl:.6f} USDT` ({net_pnl_pct:+.2f}%)\n"
+                               f"Realized Balance: `${exchange.cash:.6f} USDT`\n📊 Dashboard: http://localhost:{DASHBOARD_PORT}")
                         safe_send_message(notifier, msg)
-                        time.sleep(1)
-                        continue
+                        break # Break wait to start next loop cycle
+                
+                time.sleep(0.2)
+            # ------------------------------------------------
 
-            # 3. Normal Scanning (Fetch candles and calculate indicators)
-            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=400) # Reduced limit to 400 for speed
+            # --- 2. TECHNICAL SCAN (Low Frequency - 1 min) ---
+            # Fetch candles and calculate indicators for automatic trading.
+            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=400)
             if not data_list:
-                time.sleep(5)
                 continue
 
             current_price = data_list[-1]['close']
@@ -483,8 +478,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
-
-        time.sleep(1)  # Minimal sleep for zero-delay hyperscaling (1s)
+            time.sleep(1) # Quick retry on error
 
 
 def try_open_position(symbol, side, current_price, exchange, data_loader, notifier, timestamp, provider=None):
@@ -888,6 +882,10 @@ def run_paper_trading():
                 else:
                     strat = SmartMoneyStrategy(leverage=LEVERAGE)
                 
+                # Setup Signal Intel for filtering (Strict Strategy)
+                ai_brain = AIBrain(GEMINI_API_KEY) if GEMINI_API_KEY else None
+                s_intel = SignalIntelligence(ai_brain=ai_brain)
+                
                 if USE_REAL_EXCHANGE:
                     if EXCHANGE_NAME == "bybit" and BYBIT_API_KEY and BYBIT_API_SECRET:
                         exch = BybitExchange(
@@ -1039,11 +1037,20 @@ def run_paper_trading():
                         manual_close_requests.add(sym)
                     active_trades.clear()
                 
+                # Clear all symbol states to FLAT
+                with symbol_states_lock:
+                    for sym in symbol_states:
+                        symbol_states[sym]["direction"] = "FLAT"
+                        symbol_states[sym]["entry"] = 0
+                        symbol_states[sym]["size"] = 0
+                        symbol_states[sym]["upnl"] = 0
+                        symbol_states[sym]["margin"] = 0
+                
                 reset_account_requested[0] = False
                 logger.warning(f"♻️ ACCOUNT RESET to ${RESET_BAL:.2f} requested from dashboard!")
                 safe_send_message(notifier, f"♻️ *ACCOUNT RESET*\nBalance is now ${RESET_BAL:.2f} USDT. All history cleared. Any stuck trades will be closed.")
 
-            time.sleep(1) # Reduced from 5s to 1s for much faster dashboard command response
+            time.sleep(0.2) # High frequency for instant dashboard command response
 
     except KeyboardInterrupt:
         bot_running["value"] = False
