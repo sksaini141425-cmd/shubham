@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+trade_log.json
+bot_state.json
+trade_log_*.json
+bot_state_*.json
+final_report.txt
+backtest_results.txt

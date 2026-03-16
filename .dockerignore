@@ -1,0 +1,15 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+trade_log.json
+bot_state.json
+trade_log_*.json
+bot_state_*.json
+.git/
+.github/
+.vscode/
+*.md
+*.bat
+*.ps1

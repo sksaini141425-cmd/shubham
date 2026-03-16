@@ -1,0 +1,33 @@
+services:
+  - type: web
+    name: subham-profitbot
+    runtime: docker
+    plan: free # Change to 'starter' if you need more RAM for 60 symbols
+    region: ohio # Choose nearest to you
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: USE_REAL_EXCHANGE
+        value: "false" # Set to "true" when ready for real trading
+      - key: USE_TESTNET
+        value: "true"
+      - key: EXCHANGE
+        value: bybit
+      - key: STRATEGY
+        value: scalper70
+      - key: LEVERAGE
+        value: 50
+      - key: MAX_CONCURRENT_TRADES
+        value: 10
+      - key: TOP_N_SYMBOLS
+        value: 60
+      - key: BYBIT_API_KEY
+        sync: false # Set this in Render dashboard
+      - key: BYBIT_API_SECRET
+        sync: false # Set this in Render dashboard
+      - key: GEMINI_API_KEY
+        sync: false # Set this in Render dashboard
+    disk:
+      name: bot-data
+      mountPath: /app/data
+      sizeGB: 1
