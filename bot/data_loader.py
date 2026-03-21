@@ -92,16 +92,27 @@ class DataLoader:
                 
                 valid_pairs = []
                 for symbol, ticker in tickers.items():
-                    # For Bybit/Bybit Testnet, we want linear USDT perpetuals
-                    market = self.ccxt_client.market(symbol)
-                    if not market.get('linear') or market.get('type') != 'swap' or market.get('quote') != 'USDT':
+                    try:
+                        market = self.ccxt_client.market(symbol)
+                        # Generic CCXT check for USDT linear perpetuals
+                        # Bitget uses type='swap' and linear=True
+                        is_linear = market.get('linear', False)
+                        is_swap = market.get('type') == 'swap'
+                        is_usdt = market.get('quote') == 'USDT'
+                        
+                        if not (is_linear and is_swap and is_usdt):
+                            continue
+                        
+                        vol = float(ticker.get('quoteVolume', 0) or (ticker.get('baseVolume', 0) * ticker.get('last', 0)) or 0)
+                        if vol >= min_volume_usd:
+                            # Normalize symbol to BTCUSDT format
+                            clean_sym = symbol.replace('/USDT:USDT', '').replace('USDT', '').replace('/', '').split(':')[0] + 'USDT'
+                            valid_pairs.append({
+                                'symbol': clean_sym,
+                                'volume': vol
+                            })
+                    except:
                         continue
-                    
-                    vol = float(ticker.get('quoteVolume', 0) or ticker.get('baseVolume', 0) * ticker.get('last', 0) or 0)
-                    if vol >= min_volume_usd:
-                        # Clean the symbol for our internal 'BTCUSDT' format
-                        clean_sym = symbol.replace('/USDT:USDT', '').replace('USDT', '').replace('/', '').split(':')[0] + 'USDT'
-                        valid_pairs.append({'symbol': clean_sym, 'vol': vol})
                 
                 # Sort by volume and take top_n
                 valid_pairs.sort(key=lambda x: x['vol'], reverse=True)
@@ -135,26 +146,26 @@ class DataLoader:
             # Filter for USDT pairs and sort by quote volume (USD value)
             valid_pairs = []
             
-            # --- BYBIT TESTNET FILTER ---
-            # If we are using Bybit (Testnet), we should only keep symbols that actually exist there
-            bybit_valid_symbols = set()
-            if self.ccxt_client and 'bybit' in str(self.ccxt_client.id).lower():
+            # --- EXCHANGE-SPECIFIC SYMBOL FILTER ---
+            # If we are using a real exchange, only keep symbols that exist there
+            valid_market_symbols = set()
+            if self.ccxt_client:
                 try:
-                    # Get all market symbols from the client (e.g. BTC/USDT:USDT)
                     for s, m in self.ccxt_client.markets.items():
+                        # We want USDT linear perpetuals
                         if m.get('linear') and m.get('quote') == 'USDT':
                             # Normalize to our internal format BTCUSDT
                             clean = s.replace('/USDT:USDT', '').replace('USDT', '').replace('/', '').split(':')[0] + 'USDT'
-                            bybit_valid_symbols.add(clean)
+                            valid_market_symbols.add(clean)
                 except Exception as e:
-                    logger.error(f"Error filtering Bybit symbols: {e}")
+                    logger.error(f"Error filtering exchange symbols: {e}")
 
             for item in data:
                 if not item['symbol'].endswith('USDT'):
                     continue
                 
-                # If we have a Bybit filter active, skip symbols not on Bybit
-                if bybit_valid_symbols and item['symbol'] not in bybit_valid_symbols:
+                # If we have an exchange filter active, skip symbols not on that exchange
+                if valid_market_symbols and item['symbol'] not in valid_market_symbols:
                     continue
                     
                 # Exclude leveraged tokens or weird pairs (usually contain numbers or down/up)
@@ -182,9 +193,9 @@ class DataLoader:
                 'INJUSDT', 'SUIUSDT', 'SEIUSDT', 'TIAUSDT', 'WLDUSDT', 'FETUSDT', 'RENDERUSDT', 'BONKUSDT', 'JUPUSDT',
             ]
             
-            # --- BYBIT FALLBACK FILTER ---
-            if bybit_valid_symbols:
-                fallback_list = [s for s in fallback_list if s in bybit_valid_symbols]
+            # --- EXCHANGE FALLBACK FILTER ---
+            if valid_market_symbols:
+                fallback_list = [s for s in fallback_list if s in valid_market_symbols]
             
             if not symbols:
                 symbols = fallback_list[:top_n]

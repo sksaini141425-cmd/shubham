@@ -25,6 +25,7 @@ from bot.signal_loader import SignalLoader
 from bot.binance_exchange import BinanceExchange
 from bot.mexc_exchange import MEXCExchange
 from bot.bybit_exchange import BybitExchange
+from bot.bitget_exchange import BitgetExchange
 from bot.paper_exchange import PaperExchange, PaperAccount
 from bot.notifier import TelegramNotifier
 try:
@@ -55,7 +56,7 @@ parser.add_argument("--symbols_offset", type=int, default=0, help="Offset for ma
 parser.add_argument("--strategy", type=str, default=os.environ.get('STRATEGY', 'smart_money'), help="Strategy to use: smart_money, rsd, elite, scalper70, hyper25, diamond")
 parser.add_argument("--max_trades", type=int, default=None, help="Maximum concurrent trades")
 parser.add_argument("--leverage", type=int, default=None, help="Leverage for this bot instance")
-parser.add_argument("--exchange", type=str, default=os.environ.get('EXCHANGE', 'bybit'), help="Exchange to use: binance, mexc, bybit")
+parser.add_argument("--exchange", type=str, default=os.environ.get('EXCHANGE', 'bybit'), help="Exchange to use: binance, mexc, bybit, bitget")
 parser.add_argument("--paper", action="store_true", help="Force paper trading mode")
 args = parser.parse_args()
 
@@ -99,6 +100,9 @@ MEXC_API_KEY = os.environ.get('MEXC_API_KEY', '').strip()
 MEXC_API_SECRET = os.environ.get('MEXC_API_SECRET', '').strip()
 BYBIT_API_KEY = os.environ.get('BYBIT_API_KEY', '').strip()
 BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', '').strip()
+BITGET_API_KEY = os.environ.get('BITGET_API_KEY', '').strip()
+BITGET_API_SECRET = os.environ.get('BITGET_API_SECRET', '').strip()
+BITGET_PASSWORD = os.environ.get('BITGET_PASSWORD', '').strip()
 MAX_CONCURRENT_TRADES = args.max_trades if args.max_trades is not None else int(os.environ.get('MAX_CONCURRENT_TRADES', '15'))
 # If MAX_CONCURRENT_TRADES is very high (e.g. 999), we treat it as 'unlimited' 
 # and use a fixed capital partition for sizing.
@@ -195,7 +199,7 @@ def sync_active_trades(global_account, max_concurrent):
             logger.info(f"Synced {len(active_trades)} active trades from history log.")
 
 
-def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
+def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel):
     """
     Runs the trading loop for ONE symbol in its own thread.
     Uses the per-symbol min notional and fees from Binance exchangeInfo.
@@ -232,7 +236,7 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     current_price = data_loader.fetch_ticker(symbol)
                     if current_price:
                         logger.info(f"[{symbol}] Manual Force Open: {side}")
-                        try_open_position(symbol, side, current_price, exchange, data_loader, notifier, datetime.utcnow(), provider="Manual Force")
+                        try_open_position(symbol, side, current_price, exchange, data_loader, notifier, datetime.utcnow(), signal_intel, provider="Manual Force")
                         break # Break wait to start next loop cycle
 
                 # Check for Manual Force Close
@@ -469,19 +473,16 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     )
                     safe_send_message(notifier, msg)
 
-            # 4. Update Market Intelligence periodically
-            signal_intel.update_market_intelligence()
-
             # 5. Open new position (Technical Signals)
             if not exchange.is_in_position and latest_signal in ['LONG', 'SHORT']:
-                try_open_position(symbol, latest_signal, current_price, exchange, data_loader, signal_intel, notifier, latest_time)
+                try_open_position(symbol, latest_signal, current_price, exchange, data_loader, notifier, latest_time, signal_intel)
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
             time.sleep(1) # Quick retry on error
 
 
-def try_open_position(symbol, side, current_price, exchange, data_loader, notifier, timestamp, provider=None):
+def try_open_position(symbol, side, current_price, exchange, data_loader, notifier, timestamp, signal_intel, provider=None):
     """Shared logic for opening a position from any source (technical)."""
     with active_trades_lock:
         # 0. Circuit Breaker Check
@@ -636,7 +637,7 @@ def external_signal_loop(signal_loader, signal_intel, data_loader, notifier, glo
                     ticker = data_loader.get_ticker(symbol)
                     if ticker:
                         curr_p = ticker['last']
-                        success = try_open_position(symbol, s['side'], curr_p, temp_exchange, data_loader, signal_intel, notifier, datetime.utcnow(), provider=provider)
+                        success = try_open_position(symbol, s['side'], curr_p, temp_exchange, data_loader, notifier, datetime.utcnow(), signal_intel, provider=provider)
                         if success:
                             logger.info(f"🏆 Successfully executed external signal for {symbol}")
             
@@ -861,6 +862,22 @@ def run_paper_trading():
                 master_client.load_markets()
                 data_loader.ccxt_client = master_client # Enable data fetching via CCXT
                 logger.info(f"✅ Master MEXC client initialized.")
+            elif EXCHANGE_NAME == "bitget" and BITGET_API_KEY and BITGET_API_SECRET:
+                import ccxt
+                master_client = ccxt.bitget({
+                    'apiKey': BITGET_API_KEY,
+                    'secret': BITGET_API_SECRET,
+                    'password': BITGET_PASSWORD,
+                    'enableRateLimit': True,
+                    'options': {
+                        'defaultType': 'swap',
+                        'adjustForTimeDifference': True,
+                    }
+                })
+                if TESTNET: master_client.set_sandbox_mode(True)
+                master_client.load_markets()
+                data_loader.ccxt_client = master_client
+                logger.info(f"✅ Master BITGET client initialized.")
         except Exception as e:
             logger.error(f"❌ Failed to initialize master exchange client: {e}")
 
@@ -884,7 +901,7 @@ def run_paper_trading():
                 
                 # Setup Signal Intel for filtering (Strict Strategy)
                 ai_brain = AIBrain(GEMINI_API_KEY) if GEMINI_API_KEY else None
-                s_intel = SignalIntelligence(ai_brain=ai_brain)
+                signal_intel = SignalIntelligence(ai_brain=ai_brain)
                 
                 if USE_REAL_EXCHANGE:
                     if EXCHANGE_NAME == "bybit" and BYBIT_API_KEY and BYBIT_API_SECRET:
@@ -899,6 +916,15 @@ def run_paper_trading():
                         exch = MEXCExchange(
                             api_key=MEXC_API_KEY, 
                             api_secret=MEXC_API_SECRET, 
+                            testnet=TESTNET,
+                            symbol=sym,
+                            client=m_client
+                        )
+                    elif EXCHANGE_NAME == "bitget" and BITGET_API_KEY and BITGET_API_SECRET:
+                        exch = BitgetExchange(
+                            api_key=BITGET_API_KEY, 
+                            api_secret=BITGET_API_SECRET, 
+                            password=BITGET_PASSWORD,
                             testnet=TESTNET,
                             symbol=sym,
                             client=m_client
@@ -938,7 +964,7 @@ def run_paper_trading():
                                     exch.entry_fee_paid = trade.get('fee', 0.0)
                                 break
 
-                scan_symbol(sym, data_loader, strat, exch, notifier)
+                scan_symbol(sym, data_loader, strat, exch, notifier, signal_intel)
             except Exception as e:
                 logger.error(f"Thread for {sym} failed: {e}")
 

@@ -25,6 +25,12 @@ services:
         sync: false # Set this in Render dashboard
       - key: BYBIT_API_SECRET
         sync: false # Set this in Render dashboard
+      - key: BITGET_API_KEY
+        sync: false # Set this in Render dashboard
+      - key: BITGET_API_SECRET
+        sync: false # Set this in Render dashboard
+      - key: BITGET_PASSWORD
+        sync: false # Set this in Render dashboard
       - key: GEMINI_API_KEY
         sync: false # Set this in Render dashboard
     disk:
