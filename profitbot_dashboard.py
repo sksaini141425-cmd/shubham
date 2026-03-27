@@ -73,7 +73,15 @@ class ProfitBot:
         """Generate realistic market data with indicators"""
         base_prices = {
             'BTC/USDT': 68000,
-            'ETH/USDT': 3200
+            'ETH/USDT': 3200,
+            'BNB/USDT': 600,
+            'XRP/USDT': 0.52,
+            'ADA/USDT': 0.45,
+            'SOL/USDT': 180,
+            'AVAX/USDT': 35,
+            'MATIC/USDT': 0.85,
+            'DOT/USDT': 6.8,
+            'LINK/USDT': 14.5
         }
         base = base_prices.get(symbol, 50000)
         
@@ -748,6 +756,15 @@ setInterval(updateData, 2000);
 
 // Initial load
 updateData();
+
+// Force enable new trades on startup
+setTimeout(() => {
+    fetch('/api/toggle-entries', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: true})
+    });
+}, 3000);
 
 // Start bot automatically
 fetch('/api/start', {method: 'POST'});
