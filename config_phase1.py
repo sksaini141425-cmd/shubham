@@ -41,7 +41,7 @@ TRADING_PAIRS = [
 
 # ==================== POSITION SIZING ====================
 MAX_CONCURRENT_POSITIONS = 4  # Maximum 4 positions (increased for 10 pairs coverage)
-MIN_POSITION_VALUE_USDT = 5.0  # Binance minimum requirement
+MIN_POSITION_VALUE_USDT = 1.0  # Reduced to $1 minimum for small balances
 
 # With 2x leverage on $3:
 # - Effective Buying Power: $6
@@ -78,7 +78,7 @@ UPDATE_INTERVAL = 30  # Check every 30 seconds (faster signal detection)
 
 # ==================== SAFETY LIMITS (PHASE 1 - LESS AGGRESSIVE) ====================
 MAX_DAILY_LOSS_PERCENT = 25  # Stop trading if lose 25% in a day (increased from 15%)
-MAX_DAILY_TRADES = 20  # Maximum 20 trades per day (increased from 12)
+MAX_DAILY_TRADES = 50  # Maximum 50 trades per day (increased for more activity)
 LIQUIDATION_LEVEL = 0.15  # Close at 15% margin (more conservative)
 WARNING_LEVEL = 0.25  # Warn at 25% margin usage
 

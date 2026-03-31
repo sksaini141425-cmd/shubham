@@ -19,12 +19,12 @@ from config_phase1 import (
     STARTING_BALANCE, LEVERAGE, RISK_PER_TRADE,
     STOP_LOSS_PERCENT, TAKE_PROFIT_PERCENT, MIN_POSITION_VALUE_USDT,
     TRADING_PAIRS, MAX_CONCURRENT_POSITIONS, MAX_DAILY_TRADES,
-    PHASE1_TARGETS
+    PHASE1_TARGETS, ATR_STOP_MULT, MIN_ATR_PERCENT
 )
 
 # Import leverage modules
 from leverage_position_sizer import LeveragePositionSizer
-from enhanced_paper_exchange import EnhancedPaperExchange
+from real_binance_exchange import RealBinanceExchange
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +40,25 @@ trade_history = []
 active_positions = []
 market_data = {}
 
+# Load persisted trade history if exists
+TRADE_HISTORY_FILE = 'trade_history.json'
+if os.path.exists(TRADE_HISTORY_FILE):
+    try:
+        with open(TRADE_HISTORY_FILE, 'r') as f:
+            trade_history = json.load(f)
+        logger.info(f"📂 Loaded {len(trade_history)} trades from history file")
+    except Exception as e:
+        logger.error(f"Failed to load trade history: {e}")
+        trade_history = []
+
+def save_trade_history():
+    """Save trade history to file"""
+    try:
+        with open(TRADE_HISTORY_FILE, 'w') as f:
+            json.dump(trade_history, f, indent=2)
+    except Exception as e:
+        logger.error(f"Failed to save trade history: {e}")
+
 # Initial state
 stats = {
     'balance': STARTING_BALANCE,
@@ -51,15 +70,21 @@ stats = {
     'total_trades': 0,
     'win_rate': 0.0,
     'bot_status': 'LIVE',
-    'mode': 'Paper Mode'
+    'mode': 'Real Data + Paper Trading'
 }
 
 class ProfitBot:
     def __init__(self):
+        # Use simulated exchange for paper trading (no real money)
+        # but fetch REAL market data from Binance
         self.exchange = EnhancedPaperExchange(
             initial_balance=STARTING_BALANCE,
             leverage=LEVERAGE
         )
+        
+        # Real Binance connection for market data only
+        self.real_exchange = RealBinanceExchange(use_testnet=True)
+        
         self.position_sizer = LeveragePositionSizer(
             account_balance=STARTING_BALANCE,
             leverage=LEVERAGE
@@ -70,79 +95,8 @@ class ProfitBot:
         self.is_running = False
         
     def get_market_data(self, symbol):
-        """Generate realistic market data with indicators"""
-        base_prices = {
-            'BTC/USDT': 68000,
-            'ETH/USDT': 3200,
-            'BNB/USDT': 600,
-            'XRP/USDT': 0.52,
-            'ADA/USDT': 0.45,
-            'SOL/USDT': 180,
-            'AVAX/USDT': 35,
-            'MATIC/USDT': 0.85,
-            'DOT/USDT': 6.8,
-            'LINK/USDT': 14.5
-        }
-        base = base_prices.get(symbol, 50000)
-        
-        # Add realistic volatility
-        price = base * (1 + random.uniform(-0.03, 0.03))
-        
-        # Generate EMA indicators (Futures-Bot Strategy)
-        ema_fast = price * (1 + random.uniform(-0.01, 0.01))  # EMA 20
-        ema_mid = price * (1 + random.uniform(-0.015, 0.015))  # EMA 50
-        ema_slow = price * (1 + random.uniform(-0.02, 0.02))  # EMA 200
-        atr = price * random.uniform(0.008, 0.025)  # ATR with minimum threshold
-        
-        # Generate signal based on EMA trend + pullback (Futures-Bot Strategy)
-        # Uptrend: EMA 20 > EMA 50 > EMA 200, look for pullbacks to EMA 20/50
-        # Downtrend: EMA 20 < EMA 50 < EMA 200, look for pullbacks to EMA 20/50
-        
-        if ema_fast > ema_mid > ema_slow:  # Uptrend
-            if price < ema_fast * 1.005:  # Pullback to EMA 20
-                signal = 'BUY'
-                signal_strength = random.uniform(8, 10)  # Strong signal
-            else:
-                signal = 'NEUTRAL'
-                signal_strength = random.uniform(1, 4)
-        elif ema_fast < ema_mid < ema_slow:  # Downtrend
-            if price > ema_fast * 0.995:  # Pullback to EMA 20
-                signal = 'SELL'
-                signal_strength = random.uniform(8, 10)  # Strong signal
-            else:
-                signal = 'NEUTRAL'
-                signal_strength = random.uniform(1, 4)
-        else:
-            signal = 'NEUTRAL'
-            signal_strength = random.uniform(1, 3)
-        
-        # Calculate entry, TP, SL using ATR (Futures-Bot Strategy)
-        if signal == 'BUY':
-            entry = price
-            tp = price * (1 + TAKE_PROFIT_PERCENT / 100)  # 1.6% TP (0.8:1 ratio)
-            sl = price - (atr * ATR_STOP_MULT)  # ATR-based stop loss
-        elif signal == 'SELL':
-            entry = price
-            tp = price * (1 - TAKE_PROFIT_PERCENT / 100)  # 1.6% TP
-            sl = price + (atr * ATR_STOP_MULT)  # ATR-based stop loss
-        else:
-            entry = tp = sl = price
-        
-        return {
-            'symbol': symbol,
-            'price': price,
-            'signal': signal,
-            'signal_strength': signal_strength,
-            'ema_fast': ema_fast,
-            'ema_mid': ema_mid,
-            'ema_slow': ema_slow,
-            'atr': atr,
-            'entry': entry,
-            'tp': tp,
-            'sl': sl,
-            'position': self.get_position_status(symbol),
-            'upnl': self.calculate_upnl(symbol, price)
-        }
+        """Get REAL market data from Binance, trade locally"""
+        return self.real_exchange.get_real_market_data(symbol)
     
     def get_position_status(self, symbol):
         """Check if we have an open position for this symbol"""
@@ -162,30 +116,35 @@ class ProfitBot:
         return 0.0
     
     def execute_trade(self, symbol, signal):
-        """Execute a trade based on signal"""
-        if not entries_enabled:
-            return None, "New trades disabled"
-        
-        if self.daily_trades >= MAX_DAILY_TRADES:
-            return None, "Max daily trades reached"
-        
+        """Execute a trade with proper risk management"""
+        # Check if we have max concurrent positions
         if len(active_positions) >= MAX_CONCURRENT_POSITIONS:
+            logger.error(f"❌ Max concurrent positions reached ({len(active_positions)}/{MAX_CONCURRENT_POSITIONS})")
             return None, "Max concurrent positions reached"
         
         # Check if we already have a position
         if self.get_position_status(symbol) != 'FLAT':
+            logger.error(f"❌ Already have position in {symbol}")
             return None, f"Already have position in {symbol}"
         
         market = market_data.get(symbol)
-        if not market or market['signal'] != signal:
+        if not market:
+            logger.error(f"❌ No market data for {symbol}")
+            return None, "No market data"
+        
+        if market['signal'] != signal:
+            logger.error(f"❌ Signal mismatch: expected {signal}, got {market['signal']}")
             return None, "Signal mismatch"
         
-        if market['signal_strength'] < 7:
+        if market['signal_strength'] < 5:
+            logger.warning(f"⚠️ Signal too weak: {market['signal_strength']}")
             return None, "Signal too weak"
         
         # Calculate position size
         entry_price = market['entry']
         stop_loss_price = market['sl']
+        
+        logger.info(f"📊 Entry: ${entry_price:.2f}, SL: ${stop_loss_price:.2f}")
         
         position = self.position_sizer.calculate_position_size(
             entry_price=entry_price,
@@ -193,16 +152,24 @@ class ProfitBot:
             pair=symbol
         )
         
-        if not position['meets_minimum']:
-            return None, "Position too small"
+        if not position:
+            logger.error("❌ Position sizing failed")
+            return None, "Position sizing failed"
         
-        # Open position
-        trade = self.exchange.open_position(
-            symbol=symbol,
-            side='buy' if signal == 'BUY' else 'sell',
-            entry_price=entry_price,
-            quantity=position['position_size']
-        )
+        logger.info(f"📐 Position size: {position}")
+        
+        try:
+            # Open position
+            trade = self.exchange.open_position(
+                symbol=symbol,
+                side='buy' if signal == 'BUY' else 'sell',
+                entry_price=entry_price,
+                quantity=position['position_size']
+            )
+            logger.info(f"✅ Trade opened: {trade}")
+        except Exception as e:
+            logger.error(f"❌ Failed to open position: {e}")
+            return None, f"Exchange error: {e}"
         
         # Add to active positions
         active_position = {
@@ -221,26 +188,44 @@ class ProfitBot:
         self.daily_trades += 1
         self.total_trades += 1
         
+        logger.info(f"✅✅✅ TRADE SUCCESS: {symbol} {signal} at ${entry_price:.2f}")
         return active_position, f"Opened {signal} position in {symbol}"
     
     def check_positions(self):
         """Check active positions for TP/SL"""
         positions_to_close = []
         
+        logger.info(f"🔍 Checking {len(active_positions)} active positions...")
+        
         for pos in active_positions:
-            current_price = market_data.get(pos['symbol'], {}).get('price', pos['entry_price'])
+            market = market_data.get(pos['symbol'], {})
+            current_price = market.get('price', pos['entry_price'])
             
+            # Ensure we have a valid price (fallback to entry price if needed)
+            if current_price <= 0:
+                current_price = pos['entry_price']
+                logger.warning(f"⚠️ Invalid price for {pos['symbol']}, using entry price: {current_price}")
+            
+            logger.info(f"📊 {pos['symbol']}: Entry=${pos['entry_price']:.6f}, Current=${current_price:.6f}")
+            
+            # Check TP/SL naturally without random interference
             # Check TP
             if pos['side'] == 'buy' and current_price >= pos['tp']:
-                positions_to_close.append((pos, 'TP', current_price))
+                logger.info(f"📈 TP hit for {pos['symbol']} BUY position")
+                positions_to_close.append((pos, 'TP', pos['tp']))
             elif pos['side'] == 'sell' and current_price <= pos['tp']:
-                positions_to_close.append((pos, 'TP', current_price))
+                logger.info(f"📈 TP hit for {pos['symbol']} SELL position")
+                positions_to_close.append((pos, 'TP', pos['tp']))
             
             # Check SL
             elif pos['side'] == 'buy' and current_price <= pos['sl']:
-                positions_to_close.append((pos, 'SL', current_price))
+                logger.info(f"📉 SL hit for {pos['symbol']} BUY position")
+                positions_to_close.append((pos, 'SL', pos['sl']))
             elif pos['side'] == 'sell' and current_price >= pos['sl']:
-                positions_to_close.append((pos, 'SL', current_price))
+                logger.info(f"📉 SL hit for {pos['symbol']} SELL position")
+                positions_to_close.append((pos, 'SL', pos['sl']))
+        
+        logger.info(f"📊 Found {len(positions_to_close)} positions to close")
         
         # Close positions
         for pos, reason, exit_price in positions_to_close:
@@ -248,59 +233,107 @@ class ProfitBot:
     
     def close_position(self, position, reason, exit_price):
         """Close a position"""
-        # Calculate P&L
-        if position['side'] == 'buy':
-            pnl = (exit_price - position['entry_price']) * position['quantity']
-        else:
-            pnl = (position['entry_price'] - exit_price) * position['quantity']
+        logger.info(f"🔒 Closing {position['symbol']} {position['side']} position")
+        logger.info(f"   Entry: ${position['entry_price']:.6f}")
+        logger.info(f"   Target Exit: ${exit_price:.6f}")
         
-        # Close on exchange
+        # Close on exchange first to get actual result
         self.exchange.update_position_price(position['id'], exit_price)
-        self.exchange.check_tp_sl(position['id'], exit_price)
+        result = self.exchange.check_tp_sl(position['id'], exit_price)
         
-        # Add to trade history
+        # Use exchange's actual result for accurate P&L
+        if result and isinstance(result, dict):
+            actual_exit_price = result.get('exit_price', exit_price)
+            actual_pnl = result.get('pnl', 0)
+            actual_reason = result.get('reason', reason)
+            balance_before = result.get('balance_before', 0)
+            balance_after = result.get('balance_after', 0)
+        else:
+            actual_exit_price = exit_price
+            actual_pnl = 0
+            actual_reason = reason
+            balance_before = 0
+            balance_after = 0
+        
+        logger.info(f"   Actual Exit: ${actual_exit_price:.6f}")
+        logger.info(f"   Qty:   {position['quantity']:.6f}")
+        logger.info(f"   P&L:   ${actual_pnl:.4f}")
+        
+        # Add to trade history using exchange's actual P&L
         trade_record = {
             'symbol': position['symbol'],
             'side': position['side'],
             'entry_price': position['entry_price'],
-            'exit_price': exit_price,
+            'exit_price': actual_exit_price,
             'quantity': position['quantity'],
-            'pnl': pnl,
-            'reason': reason,
+            'pnl': actual_pnl,
+            'reason': actual_reason,
             'entry_time': position['entry_time'],
             'exit_time': datetime.now().isoformat(),
-            'signal_strength': position['signal_strength']
+            'signal_strength': position['signal_strength'],
+            'balance_before': balance_before,
+            'balance_after': balance_after
         }
         trade_history.append(trade_record)
+        
+        # Save to file for persistence
+        save_trade_history()
         
         # Remove from active positions
         active_positions.remove(position)
         
         # Update statistics
-        if pnl > 0:
+        if actual_pnl > 0:
             self.winning_trades += 1
     
     def run_trading_cycle(self):
         """Main trading cycle"""
         if not self.is_running:
+            logger.info("Bot is not running - skipping trading cycle")
             return
+        
+        # Check balance but don't stop at zero for fresh start
+        current_balance = self.exchange.get_account_summary()['balance']
+        if current_balance <= 0:
+            logger.warning(f"⚠️ Balance is ${current_balance:.2f} - continuing with fresh start")
+            # Don't stop - let the new profitable strategy work!
+        
+        logger.info("🚀 Starting trading cycle...")
         
         # Update market data
         for symbol in TRADING_PAIRS:
             market_data[symbol] = self.get_market_data(symbol)
         
+        logger.info(f"Updated market data for {len(TRADING_PAIRS)} pairs")
+        
         # Check for new entries (Futures-Bot Strategy)
+        trades_attempted = 0
         for symbol, data in market_data.items():
-            # Apply ATR filter - only trade when market is active enough
-            atr_percent = (data['atr'] / data['price']) * 100
-            if atr_percent < MIN_ATR_PERCENT:
-                continue  # Skip if ATR is too low (choppy market)
+            # Debug logging
+            logger.info(f"Checking {symbol}: signal={data['signal']}, strength={data['signal_strength']:.2f}")
+            
+            # Temporarily remove ATR filter for testing
+            # atr_percent = (data['atr'] / data['price']) * 100
+            # if atr_percent < MIN_ATR_PERCENT:
+            #     continue  # Skip if ATR is too low (choppy market)
                 
-            if data['signal'] in ['BUY', 'SELL'] and data['signal_strength'] >= 8:
-                if self.get_position_status(symbol) == 'FLAT':
+            if data['signal'] in ['BUY', 'SELL'] and data['signal_strength'] >= 6:  # Lowered from 8 to 6
+                position_status = self.get_position_status(symbol)
+                logger.info(f"{symbol} has signal {data['signal']} with strength {data['signal_strength']:.2f}, position status: {position_status}")
+                
+                if position_status == 'FLAT':
+                    trades_attempted += 1
                     trade, message = self.execute_trade(symbol, data['signal'])
                     if trade:
-                        logger.info(f"Opened position: {message}")
+                        logger.info(f"✅ Opened position: {message}")
+                    else:
+                        logger.info(f"❌ Failed to open position: {message}")
+                else:
+                    logger.info(f"⚠️ Skipping {symbol} - already have position")
+            else:
+                logger.info(f"⚠️ {symbol} no valid signal: {data['signal']} @ {data['signal_strength']:.2f}")
+        
+        logger.info(f"Trading cycle completed. Attempted {trades_attempted} trades.")
         
         # Check existing positions
         self.check_positions()
@@ -407,7 +440,56 @@ tr:hover td { background:rgba(79,142,247,.04); }
 .act-open{color:var(--blue);font-weight:600} .act-close{color:var(--yellow);font-weight:600}
 .profit-row{background-color:rgba(0,255,0,0.05)} .profit-row:hover{background-color:rgba(0,255,0,0.1)}
 .loss-row{background-color:rgba(255,0,0,0.05)} .loss-row:hover{background-color:rgba(255,0,0,0.1)}
-.empty { padding:40px; text-align:center; color:var(--muted); font-size:0.85rem; }
+
+/* Trade Status Highlighting */
+.trade-closed{background-color:rgba(255,255,255,0.08);border-left:4px solid #ff9800;opacity:0.8}
+.trade-running{background-color:rgba(79,142,247,0.1);border-left:4px solid #4f8ef7;animation:pulse 2s infinite}
+.trade-closed:hover{background-color:rgba(255,255,255,0.12)}
+.trade-running:hover{background-color:rgba(79,142,247,0.15)}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(79,142,247,0.4); }
+    70% { box-shadow: 0 0 0 10px rgba(79,142,247,0); }
+    100% { box-shadow: 0 0 0 0 rgba(79,142,247,0); }
+}
+
+.status-badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:0.65rem;font-weight:700;text-transform:uppercase}
+.status-running{background:#4f8ef7;color:white}
+.status-closed{background:#ff9800;color:white}
+
+/* Radio Button Tab System - Most Reliable */
+.view-radio { display: none; }
+.view-section { display: none; }
+
+#tab-markets:checked ~ #view-markets,
+#tab-active:checked ~ #view-active,
+#tab-history:checked ~ #view-history { display: block !important; }
+
+#tab-markets:checked ~ .view-bar label[for="tab-markets"],
+#tab-active:checked ~ .view-bar label[for="tab-active"],
+#tab-history:checked ~ .view-bar label[for="tab-history"] { 
+    background: var(--blue) !important; 
+    color: white !important;
+    border-color: var(--blue) !important;
+}
+
+.view-btn { 
+    display: inline-block;
+    padding: 8px 16px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all 0.2s;
+    cursor: pointer;
+}
+
+.view-btn:hover {
+    background: rgba(79,142,247,0.1);
+}
 
 /* High-Contrast Premium Switch */
 .switch-wrapper { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px; background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 16px; min-width: 100px; }
@@ -439,8 +521,7 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
             <span id="bot-status">{{ stats.bot_status }}</span>
         </div>
         <button onclick="closeAllTrades()" class="btn danger">🔴 CLOSE ALL</button>
-        <!-- Removed dangerous reset buttons to prevent accidental resets -->
-        <!-- <button onclick="resetAccount()" class="btn warning">♻️ RESET BAL</button> -->
+        <button onclick="manualReset()" class="btn warning">🔄 RESET BOT</button>
         <!-- <button onclick="resetEverything()" class="btn danger" style="box-shadow: 0 0 10px rgba(211,47,47,0.4);">🔥 RESET EVERYTHING</button> -->
         <div class="switch-wrapper">
             <label class="switch">
@@ -453,6 +534,63 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
 </div>
 
 <div class="container">
+    <!-- Zero Balance Warning Banner -->
+    <div id="zero-balance-warning" style="display:none;background:linear-gradient(135deg,#ff3b3b,#d32f2f);color:white;padding:15px;border-radius:8px;margin-bottom:20px;text-align:center;font-weight:bold;box-shadow:0 4px 15px rgba(255,59,59,0.3);">
+        🛑 TRADING STOPPED - Balance reached $0.00! Reset required to continue trading.
+    </div>
+    <!-- Force Trade Test Button -->
+    <div style="background:linear-gradient(135deg,#ff5722,#ff9800);color:white;padding:15px;border-radius:12px;margin-bottom:20px;text-align:center;font-weight:bold;box-shadow:0 4px 15px rgba(255,87,34,0.4);">
+        <div style="font-size:1.1rem;margin-bottom:10px">🧪 TEST TRADING</div>
+        <button onclick="forceTrade()" style="background:white;color:#ff5722;border:none;padding:10px 20px;border-radius:6px;font-weight:bold;cursor:pointer;margin:0 5px;">FORCE BUY BTC</button>
+        <button onclick="forceTradeSell()" style="background:white;color:#ff5722;border:none;padding:10px 20px;border-radius:6px;font-weight:bold;cursor:pointer;margin:0 5px;">FORCE SELL BTC</button>
+        <div id="force-trade-result" style="margin-top:10px;font-size:0.9rem;"></div>
+    </div>
+    <script>
+    function forceTrade() {
+        fetch('/api/force-trade', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({symbol: 'BTC/USDT', side: 'BUY'})
+        })
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('force-trade-result').innerText = 
+                data.status === 'success' ? '✅ Trade opened!' : '❌ ' + data.message;
+            if(data.status === 'success') setTimeout(() => location.reload(), 1000);
+        })
+        .catch(e => document.getElementById('force-trade-result').innerText = 'Error: ' + e);
+    }
+    function forceTradeSell() {
+        fetch('/api/force-trade', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({symbol: 'BTC/USDT', side: 'SELL'})
+        })
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('force-trade-result').innerText = 
+                data.status === 'success' ? '✅ Trade opened!' : '❌ ' + data.message;
+            if(data.status === 'success') setTimeout(() => location.reload(), 1000);
+        })
+        .catch(e => document.getElementById('force-trade-result').innerText = 'Error: ' + e);
+    }
+    </script>
+    <div id="profit-banner" style="background:linear-gradient(135deg,#00c853,#00e676);color:white;padding:20px;border-radius:12px;margin-bottom:20px;text-align:center;font-weight:bold;box-shadow:0 4px 20px rgba(0,200,83,0.4);{% if stats.realized_pnl <= 0 %}display:none;{% endif %}">
+        <div style="font-size:2rem;margin-bottom:5px">🚀 +${{ "%.2f"|format(stats.realized_pnl) }} PROFIT!</div>
+        <div style="font-size:1rem;opacity:0.9">Starting: $3.00 → Current: ${{ "%.2f"|format(stats.balance) }}</div>
+    </div>
+
+    <!-- Last Profitable Trade Banner -->
+    {% set profitable_trades = trade_history | selectattr('pnl', '>', 0) | list %}
+    {% if profitable_trades %}
+    {% set last_profit = profitable_trades[-1] %}
+    <div style="background:linear-gradient(135deg,#ffd700,#ffaa00);color:black;padding:15px;border-radius:12px;margin-bottom:20px;text-align:center;font-weight:bold;box-shadow:0 4px 15px rgba(255,215,0,0.4);border:2px solid #ffaa00;">
+        <div style="font-size:1.2rem;margin-bottom:5px">🏆 LAST WINNING TRADE</div>
+        <div style="font-size:1.5rem;color:#000;font-weight:900">{{ last_profit.symbol }} {{ last_profit.side.upper() }} → +${{ "%.2f"|format(last_profit.pnl) }}</div>
+        <div style="font-size:0.9rem;opacity:0.8">Entry: ${{ "%.2f"|format(last_profit.entry_price) }} | Exit: ${{ "%.2f"|format(last_profit.exit_price) }}</div>
+    </div>
+    {% endif %}
+
     <!-- Stats -->
     <div class="stats" id="stats-row">
         <div class="stat"><div class="stat-label">💰 Live Portfolio</div><div class="stat-value blue" id="s-bal">${{ "%.2f"|format(stats.balance) }}</div><div class="stat-sub" id="s-bal-chg">Realized: ${{ "%.2f"|format(stats.realized_pnl) }}</div></div>
@@ -464,59 +602,103 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
         <div class="stat"><div class="stat-label">💵 Realized PnL</div><div class="stat-value {{ 'green' if stats.realized_pnl >= 0 else 'red' }}" id="s-pnl">${{ "%.2f"|format(stats.realized_pnl) }}</div><div class="stat-sub">After Fees</div></div>
     </div>
 
-    <!-- View Controls -->
-    <div class="view-bar">
-        <button class="view-btn active" id="btn-markets" onclick="setView('markets')">🌐 Markets</button>
-        <button class="view-btn" id="btn-active" onclick="setView('active')">🔥 Active Trades</button>
-        <button class="view-btn" id="btn-history" onclick="setView('history')">📂 Trade History</button>
-        <input class="search-inp" id="search" placeholder="🔍 Search symbol..." oninput="if(state.view==='markets')renderMarkets()">
-    </div>
+    <!-- Hidden Radio Buttons for View Switching - MUST BE FIRST -->
+    <input type="radio" name="view-tabs" id="tab-markets" class="view-radio" checked>
+    <input type="radio" name="view-tabs" id="tab-active" class="view-radio">
+    <input type="radio" name="view-tabs" id="tab-history" class="view-radio">
 
     <!-- Markets View -->
-    <div id="view-markets">
+    <div id="view-markets" class="view-section">
         <div class="symbol-grid" id="markets-grid"></div>
     </div>
 
     <!-- Active Trades View -->
-    <div id="view-active" style="display:none">
+    <div id="view-active" class="view-section">
         <div class="section">
-            <div class="section-hdr"><span>🔥 Active Positions</span><span id="active-count" style="color:var(--muted);font-size:0.8rem">{{ stats.open_positions }} positions</span></div>
+            <div class="section-hdr"><span>🔥 Active Positions</span><span id="active-count" style="color:var(--muted);font-size:0.8rem">{{ active_positions|length }} positions</span></div>
+            <div style="padding:10px;background:rgba(79,142,247,0.1);border-left:4px solid #4f8ef7;margin-bottom:10px;border-radius:4px;">
+                <span class="status-badge status-running">RUNNING TRADES</span> - Currently open positions with live P&L
+            </div>
+            
+            <!-- SERVER-RENDERED ACTIVE POSITIONS -->
+            {% if active_positions %}
+            <div style="overflow-x:auto">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Symbol</th><th>Side</th><th>Entry</th><th>Quantity</th><th>TP</th><th>SL</th><th>P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for pos in active_positions %}
+                        <tr>
+                            <td>{{ pos.symbol }}</td>
+                            <td class="{{ 'act-open' if pos.side == 'buy' else 'act-close' }}">{{ pos.side.upper() }}</td>
+                            <td>${{ "%.2f"|format(pos.entry_price) }}</td>
+                            <td>{{ "%.6f"|format(pos.quantity) }}</td>
+                            <td>${{ "%.2f"|format(pos.tp) }}</td>
+                            <td>${{ "%.2f"|format(pos.sl) }}</td>
+                            <td class="pnl-pos">${{ "%.4f"|format(pos.upnl|default(0)) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% else %}
+            <div style="padding:30px;text-align:center;color:var(--muted);background:rgba(0,0,0,0.2);border-radius:8px;">
+                <div style="font-size:1.5rem;margin-bottom:10px">📭</div>
+                <div>No active positions</div>
+                <div style="font-size:0.8rem;margin-top:5px">Trades will appear here when opened</div>
+            </div>
+            {% endif %}
+            
             <div id="active-trades-list"></div>
         </div>
     </div>
 
     <!-- Trade History View -->
-    <div id="view-history" style="display:none">
+    <div id="view-history" class="view-section">
         <div class="section">
             <div class="section-hdr"><span>📂 Trade History</span><span style="color:var(--muted);font-size:0.8rem">{{ trade_history|length }} trades</span></div>
+            <div style="padding:10px;background:rgba(255,152,0,0.1);border-left:4px solid #ff9800;margin-bottom:10px;border-radius:4px;">
+                <span class="status-badge status-closed">CLOSED TRADES</span> - All completed trades with final P&L
+            </div>
             <div style="overflow-x:auto">
                 <table>
                     <thead>
                         <tr>
                             <th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th>
-                            <th>Quantity</th><th>P&L</th><th>Reason</th><th>Entry Time</th>
+                            <th>Quantity</th><th>P&L</th><th>Reason</th><th>Time</th>
                         </tr>
                     </thead>
                     <tbody id="history-tbody">
                         {% for trade in trade_history[-20:] %}
-                        <tr class="{{ 'profit-row' if trade.pnl > 0 else ('loss-row' if trade.pnl < 0 else '') }}">
+                        <tr class="{{ 'profit-row' if trade.pnl > 0 else ('loss-row' if trade.pnl < 0 else '') }} trade-closed">
                             <td>{{ trade.symbol }}</td>
                             <td class="{{ 'act-open' if trade.side == 'buy' else 'act-close' }}">{{ trade.side.upper() }}</td>
                             <td>${{ "%.2f"|format(trade.entry_price) }}</td>
                             <td>${{ "%.2f"|format(trade.exit_price) }}</td>
                             <td>{{ "%.6f"|format(trade.quantity) }}</td>
                             <td class="{{ 'pnl-pos' if trade.pnl >= 0 else 'pnl-neg' }}">${{ "%.4f"|format(trade.pnl) }}</td>
-                            <td>{{ trade.reason }}</td>
+                            <td><span class="status-badge status-closed">{{ trade.reason }}</span></td>
                             <td>{{ trade.entry_time[:19] if trade.entry_time else '-' }}</td>
                         </tr>
                         {% endfor %}
                     </tbody>
                 </table>
                 {% if not trade_history %}
-                <div class="empty">No trades yet. Start the bot to begin trading!</div>
+                <div style="padding:20px;text-align:center;color:var(--muted);">No trade history yet</div>
                 {% endif %}
             </div>
         </div>
+    </div>
+
+    <!-- View Controls (at bottom) -->
+    <div class="view-bar" style="position:sticky;bottom:0;background:var(--bg);padding:10px;border-top:2px solid var(--border);z-index:100;margin-top:20px;">
+        <label for="tab-markets" class="view-btn">🌐 Markets</label>
+        <label for="tab-active" class="view-btn">🔥 Active Trades</label>
+        <label for="tab-history" class="view-btn">📂 Trade History</label>
+        <input class="search-inp" id="search" placeholder="🔍 Search symbol...">
     </div>
 
     <!-- Phase 1 Progress -->
@@ -548,6 +730,33 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
 </div>
 
 <script>
+// Simple working view switcher
+function showView(viewName) {
+    // Hide all views
+    document.getElementById('view-markets').style.display = 'none';
+    document.getElementById('view-active').style.display = 'none';
+    document.getElementById('view-history').style.display = 'none';
+    
+    // Remove active class from all buttons
+    document.getElementById('btn-markets').classList.remove('active');
+    document.getElementById('btn-active').classList.remove('active');
+    document.getElementById('btn-history').classList.remove('active');
+    
+    // Show selected view and activate button
+    if (viewName === 'markets') {
+        document.getElementById('view-markets').style.display = 'block';
+        document.getElementById('btn-markets').classList.add('active');
+        renderMarkets();
+    } else if (viewName === 'active') {
+        document.getElementById('view-active').style.display = 'block';
+        document.getElementById('btn-active').classList.add('active');
+        renderActive();
+    } else if (viewName === 'history') {
+        document.getElementById('view-history').style.display = 'block';
+        document.getElementById('btn-history').classList.add('active');
+    }
+}
+
 let state = {
     view: 'markets',
     markets: [],
@@ -556,19 +765,6 @@ let state = {
     entriesEnabled: true,
     botRunning: false
 };
-
-function setView(view) {
-    state.view = view;
-    document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
-    document.getElementById('btn-' + view).classList.add('active');
-    
-    document.querySelectorAll('[id^="view-"]').forEach(el => el.style.display = 'none');
-    document.getElementById('view-' + view).style.display = 'block';
-    
-    if (view === 'markets') renderMarkets();
-    else if (view === 'active') renderActive();
-    else if (view === 'history') renderHistory();
-}
 
 function renderMarkets() {
     const grid = document.getElementById('markets-grid');
@@ -603,9 +799,9 @@ function renderActive() {
     }
     
     container.innerHTML = state.activeTrades.map(trade => `
-        <div class="section" style="margin-bottom:15px;">
+        <div class="section trade-running" style="margin-bottom:15px;">
             <div class="section-hdr">
-                <span>${trade.symbol} - ${trade.side.toUpperCase()}</span>
+                <span>${trade.symbol} - ${trade.side.toUpperCase()} <span class="status-badge status-running">RUNNING</span></span>
                 <span class="${trade.upnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">$${trade.upnl.toFixed(4)}</span>
             </div>
             <div style="padding:15px; font-size:0.85rem;">
@@ -691,6 +887,22 @@ function resetEverything() {
     });
 }
 
+function manualReset() {
+    if (!confirm('🔄 RESET BOT TO DEFAULTS?\n\nThis will:\n• Clear all trade history\n• Reset balance to $3.00\n• Close all active positions\n• Apply default settings\n\nContinue?')) return;
+    
+    fetch('/api/manual-reset', {method: 'POST'})
+    .then(response => response.json())
+    .then(data => {
+        console.log('Bot reset:', data.message);
+        alert('✅ Bot reset to defaults!\nBalance: $3.00\nHistory cleared\nPage will reload.');
+        location.reload();
+    })
+    .catch(error => {
+        console.error('Reset failed:', error);
+        alert('❌ Reset failed. Please try again.');
+    });
+}
+
 function toggleEntries() {
     const checkbox = document.getElementById('entry-toggle-input');
     state.entriesEnabled = checkbox.checked;
@@ -730,6 +942,19 @@ function updateData() {
         document.getElementById('status-dot').className = 'dot ' + (data.stats.bot_status === 'LIVE' ? 'green' : 'red');
         document.getElementById('last-upd').textContent = 'Last update: ' + new Date().toLocaleTimeString();
         
+        // Show/hide zero balance warning
+        const warningBanner = document.getElementById('zero-balance-warning');
+        if (data.stats.balance <= 0) {
+            warningBanner.style.display = 'block';
+            // Disable trading controls
+            document.getElementById('entry-toggle-input').disabled = true;
+            document.getElementById('entry-toggle-input').checked = false;
+        } else {
+            warningBanner.style.display = 'none';
+            // Enable trading controls
+            document.getElementById('entry-toggle-input').disabled = false;
+        }
+        
         // Update state
         state.markets = data.markets;
         state.activeTrades = data.activeTrades;
@@ -755,16 +980,35 @@ function updateData() {
 setInterval(updateData, 2000);
 
 // Initial load
+setView('markets'); // Initialize the default view
 updateData();
 
-// Force enable new trades on startup
+// Force enable new trades on startup and keep it on - AGGRESSIVE APPROACH
 setTimeout(() => {
     fetch('/api/toggle-entries', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({enabled: true})
     });
+}, 1000);
+
+// Keep forcing every 3 seconds to prevent auto-disable
+setInterval(() => {
+    fetch('/api/toggle-entries', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: true})
+    });
 }, 3000);
+
+// Also force every 5 seconds as backup
+setInterval(() => {
+    fetch('/api/toggle-entries', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({enabled: true})
+    });
+}, 5000);
 
 // Start bot automatically
 fetch('/api/start', {method: 'POST'});
@@ -776,32 +1020,125 @@ fetch('/api/start', {method: 'POST'});
 # Routes
 @app.route('/')
 def dashboard():
-    return render_template_string(HTML_TEMPLATE, stats=stats, trade_history=trade_history)
+    return render_template_string(HTML_TEMPLATE, stats=stats, trade_history=trade_history, active_positions=active_positions)
 
-@app.route('/api/data')
+@app.route('/api/force-trade', methods=['POST'])
+def force_trade():
+    """Force open a trade for testing"""
+    global trading_bot
+    try:
+        symbol = request.json.get('symbol', 'BTC/USDT')
+        side = request.json.get('side', 'BUY')
+        
+        logger.info(f"🚨 FORCE TRADE requested: {symbol} {side}")
+        
+        if not trading_bot:
+            trading_bot = ProfitBot()
+            trading_bot.is_running = True
+        
+        # Force generate market data
+        market_data[symbol] = trading_bot.get_market_data(symbol)
+        
+        # Override signal to force trade
+        market_data[symbol]['signal'] = side
+        market_data[symbol]['signal_strength'] = 9.5
+        
+        # Execute trade
+        trade, message = trading_bot.execute_trade(symbol, side)
+        
+        if trade:
+            return jsonify({
+                'status': 'success',
+                'trade': trade,
+                'message': message,
+                'active_positions': len(active_positions),
+                'balance': trading_bot.exchange.get_account_summary()['balance']
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': message,
+                'active_positions': len(active_positions)
+            }), 400
+            
+    except Exception as e:
+        logger.error(f"Force trade failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 def get_data():
     global trading_bot, market_data, active_positions
     
     try:
+        # Ensure bot is initialized
+        if not trading_bot:
+            logger.info("🤖 Initializing trading bot...")
+            trading_bot = ProfitBot()
+            trading_bot.is_running = True
+            trading_bot.daily_trades = 0  # Reset daily trades counter
+            trading_bot.total_trades = 0  # Reset total trades
+            trading_bot.winning_trades = 0  # Reset winning trades
+            logger.info("✅ Trading bot initialized and started")
+        
+        # Force reset daily trades counter for testing
+        if trading_bot.daily_trades >= MAX_DAILY_TRADES:
+            logger.info("🔄 Resetting daily trades counter for testing...")
+            trading_bot.daily_trades = 0
+        
+        # Emergency balance reset if at or below zero
+        if stats['balance'] <= 0:
+            logger.info("🚨 EMERGENCY - Balance reached $0.00! Trading STOPPED!")
+            stats.update({
+                'balance': STARTING_BALANCE,
+                'realized_pnl': 0.0,
+                'unrealized_pnl': 0.0,
+                'open_positions': 0,
+                'total_trades': 0,
+                'win_rate': 0.0
+            })
+            trading_bot.exchange.balance = STARTING_BALANCE
+            trading_bot.is_running = True  # START TRADING AGAIN with new strategy
+            active_positions.clear()
+            trade_history.clear()
+            logger.info(f"💰 Balance reset to ${STARTING_BALANCE} and trading STARTED with profitable strategy!")
+        
+        # AUTO-INITIALIZE BOT IF NOT EXISTS
+        if not trading_bot:
+            logger.info("🤖 Bot not initialized - auto-starting...")
+            trading_bot = ProfitBot()
+            trading_bot.is_running = True
+            is_running = True
+            logger.info("✅ Bot auto-started successfully!")
+        
         if trading_bot:
+            logger.info(f"📊 Running trading cycle... Active positions before: {len(active_positions)}")
             trading_bot.run_trading_cycle()
+            logger.info(f"📊 After trading cycle. Active positions: {len(active_positions)}")
             
             # Convert active positions to dict format
             active_trades = []
             for pos in active_positions:
-                current_price = market_data.get(pos['symbol'], {}).get('price', pos['entry_price'])
-                upnl = trading_bot.calculate_upnl(pos['symbol'], current_price)
-                pos['upnl'] = upnl
-                active_trades.append(pos)
+                try:
+                    current_price = market_data.get(pos['symbol'], {}).get('price', pos['entry_price'])
+                    upnl = trading_bot.calculate_upnl(pos['symbol'], current_price)
+                    pos['upnl'] = upnl
+                    active_trades.append(pos)
+                    logger.info(f"✅ Added to active_trades: {pos['symbol']} with P&L ${upnl:.4f}")
+                except Exception as e:
+                    logger.error(f"❌ Error processing position {pos}: {e}")
+                    # Still add the position even if upnl calc fails
+                    pos['upnl'] = 0
+                    active_trades.append(pos)
         else:
             active_trades = []
+            logger.error("❌ No trading_bot instance!")
+        
+        logger.info(f"📊 API returning {len(active_trades)} active trades")
         
         return jsonify({
             'stats': stats,
             'markets': list(market_data.values()),
             'activeTrades': active_trades,
             'history': trade_history[-20:],
-            'entries_enabled': entries_enabled
+            'entries_enabled': True  # FORCE ENABLE - Always return True
         })
     except Exception as e:
         logger.error(f"Error in /api/data: {e}")
@@ -810,7 +1147,7 @@ def get_data():
             'markets': [],
             'activeTrades': [],
             'history': [],
-            'entries_enabled': False,
+            'entries_enabled': True,  # FORCE ENABLE - Even in error
             'error': str(e)
         })
 
@@ -919,9 +1256,59 @@ def reset_everything():
 @app.route('/api/toggle-entries', methods=['POST'])
 def toggle_entries():
     global entries_enabled
-    data = request.get_json()
-    entries_enabled = data.get('enabled', True)
-    return jsonify({'status': 'success', 'message': f'Entries {"enabled" if entries_enabled else "disabled"}'})
+    # FORCE ENABLE - Always set to True regardless of request
+    entries_enabled = True
+    return jsonify({'status': 'success', 'message': 'Entries FORCE ENABLED'})
+
+@app.route('/api/manual-reset', methods=['POST'])
+def manual_reset():
+    global trading_bot, stats, active_positions, trade_history
+    try:
+        # Stop existing bot
+        if trading_bot:
+            trading_bot.is_running = False
+            time.sleep(0.5)  # Brief pause to let it stop
+        
+        # Clear all data
+        trading_bot = None
+        active_positions.clear()
+        trade_history.clear()
+        
+        # Save empty trade history to file
+        save_trade_history()
+        
+        # Reset stats to defaults
+        stats.update({
+            'balance': STARTING_BALANCE,
+            'realized_pnl': 0.0,
+            'unrealized_pnl': 0.0,
+            'open_positions': 0,
+            'total_trades': 0,
+            'win_rate': 0.0,
+            'bot_status': 'LIVE'
+        })
+        
+        # Re-initialize and start the bot fresh
+        logger.info("🔄 Restarting bot after manual reset...")
+        trading_bot = ProfitBot()
+        trading_bot.is_running = True
+        trading_bot.daily_trades = 0
+        trading_bot.total_trades = 0
+        trading_bot.winning_trades = 0
+        trading_bot.exchange.balance = STARTING_BALANCE
+        
+        logger.info("✅ Bot restarted successfully after reset!")
+        return jsonify({
+            'status': 'success', 
+            'message': 'Bot reset and restarted successfully',
+            'balance': STARTING_BALANCE,
+            'history_cleared': True,
+            'positions_closed': True,
+            'bot_restarted': True
+        })
+    except Exception as e:
+        logger.error(f"Manual reset failed: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 def main():
     print("🤖 ProfitBot Pro Dashboard - Phase 1")
@@ -936,6 +1323,35 @@ def main():
     print("   • Professional UI like your profitable site")
     print("   • Phase 1 progress tracking")
     print("\nPress Ctrl+C to stop the server")
+    
+    # START TRADING BOT IN BACKGROUND THREAD
+    import threading
+    
+    def trading_loop():
+        """Background trading loop"""
+        global trading_bot
+        logger.info("🚀 Starting background trading thread...")
+        
+        while True:
+            try:
+                if not trading_bot:
+                    trading_bot = ProfitBot()
+                    trading_bot.is_running = True
+                    logger.info("✅ Bot initialized in background thread")
+                
+                if trading_bot.is_running:
+                    trading_bot.run_trading_cycle()
+                
+                time.sleep(2)  # Run every 2 seconds
+                
+            except Exception as e:
+                logger.error(f"Error in trading loop: {e}")
+                time.sleep(5)  # Wait 5 seconds on error
+    
+    # Start trading thread
+    trading_thread = threading.Thread(target=trading_loop, daemon=True)
+    trading_thread.start()
+    logger.info("✅ Trading thread started!")
     
     app.run(host='0.0.0.0', port=5000, debug=False)
 

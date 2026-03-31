@@ -1,0 +1,23 @@
+[build]
+  command = "pip install -r requirements.txt"
+  publish = "."
+
+[build.environment]
+  PYTHON_VERSION = "3.9"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/api/:splat"
+  status = 200
+
+[dev]
+  command = "python profitbot_dashboard.py"
+  targetPort = 5000
+  publish = "."
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    X-XSS-Protection = "1; mode=block"

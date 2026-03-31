@@ -1,0 +1,178 @@
+===========================================
+PROFITBOT PHASE 1 - COMPLETE BACKTEST SETTINGS
+===========================================
+Generated: 2026-03-30
+Purpose: All parameters for backtesting and replication
+
+===========================================
+CAPITAL & RISK MANAGEMENT
+===========================================
+STARTING_BALANCE = 3.0          # $3 starting capital
+TARGET_BALANCE = 4.0            # $4 target (33% growth)
+RISK_PER_TRADE = 0.02           # 2% risk per trade ($0.06 per trade)
+LEVERAGE = 2                    # 2x leverage (conservative)
+USE_LEVERAGE = True
+
+Risk Calculation:
+- Risk Amount: $3 × 2% = $0.06 per trade
+- Reward Amount: $0.06 × 0.8 = $0.048 per trade (0.8:1 ratio)
+- Daily Target: 2 wins = +$0.10 (3.3% daily)
+- Weekly Target: ~$3.70
+
+===========================================
+TRADING PAIRS (10 PAIRS)
+===========================================
+TRADING_PAIRS = [
+    'BTC/USDT',   # Bitcoin - Most liquid
+    'ETH/USDT',   # Ethereum - High volatility
+    'BNB/USDT',   # Binance Coin - Stable
+    'XRP/USDT',   # Ripple - Frequent movements
+    'ADA/USDT',   # Cardano - Good patterns
+    'SOL/USDT',   # Solana - High volatility
+    'AVAX/USDT',  # Avalanche - Strong movements
+    'MATIC/USDT', # Polygon - Consistent
+    'DOT/USDT',   # Polkadot - Technical patterns
+    'LINK/USDT',  # Chainlink - Active trading
+]
+
+===========================================
+POSITION SIZING
+===========================================
+MAX_CONCURRENT_POSITIONS = 4     # Maximum 4 positions
+MIN_POSITION_VALUE_USDT = 1.0    # $1 minimum position size
+
+With 2x leverage on $3:
+- Effective Buying Power: $6
+- Can open 1-2 positions of $5 each
+- Total exposure: $10 with leverage
+- Margin used: $5 (safe level)
+
+===========================================
+STOP LOSS & TAKE PROFIT
+===========================================
+STOP_LOSS_PERCENT = 2.0          # 2% stop loss (ATR-based override)
+TAKE_PROFIT_PERCENT = 1.6        # 1.6% take profit (0.8:1 ratio)
+ATR_STOP_MULT = 2.5              # ATR multiplier for stop loss
+TAKE_PROFIT_R_MULTIPLE = 0.8     # 0.8:1 reward ratio
+
+Trade Example:
+- Entry: BTC $68,000 (pullback to EMA 20/50)
+- Position Size: $5 notional / $68,000 = 0.0000735 BTC
+- Stop Loss: ATR-based (2.5x ATR from entry)
+- Take Profit: $69,088 (1.6% above)
+- Risk: $0.06 (2% of $3)
+- Reward: $0.048 (0.8:1 ratio)
+
+===========================================
+FUTURES-BOT STRATEGY PARAMETERS
+===========================================
+EMA_FAST = 20                   # Fast trend indicator
+EMA_MID = 50                    # Medium trend indicator
+EMA_SLOW = 200                  # Main trend filter
+ATR_PERIOD = 14                 # ATR calculation period
+MIN_ATR_PERCENT = 0.08          # Only trade when market active enough
+
+Strategy: EMA Trend + Pullback
+- Entry: Price pulls back to EMA 20/50 in direction of EMA 200 trend
+- Trend Filter: Price above EMA 200 for BUY, below for SELL
+- Signal Strength: >= 6 (lowered from 8 for more opportunities)
+
+===========================================
+TRADING PARAMETERS
+===========================================
+TIMEFRAME = '15m'               # 15-minute candles
+MAX_TRADE_DURATION_HOURS = 4    # Close in 4 hours
+UPDATE_INTERVAL = 30             # Check every 30 seconds
+TRADING_CYCLE_INTERVAL = 2      # Background loop every 2 seconds
+
+===========================================
+SAFETY LIMITS
+===========================================
+MAX_DAILY_LOSS_PERCENT = 25      # Stop if lose 25% in a day
+MAX_DAILY_TRADES = 50            # Maximum 50 trades per day
+LIQUIDATION_LEVEL = 0.15        # Close at 15% margin
+WARNING_LEVEL = 0.25             # Warn at 25% margin usage
+MAX_CONSECUTIVE_LOSSES = 5       # Stop after 5 consecutive losses
+MIN_WIN_RATE_THRESHOLD = 0.30    # Pause if win rate < 30%
+VOLATILITY_THRESHOLD = 0.01      # Minimum 1% volatility to trade
+
+===========================================
+TRADING HOURS
+===========================================
+TRADING_HOURS_START = 0          # Start at 12 AM UTC
+TRADING_HOURS_END = 23           # Stop at 11 PM UTC
+(24/7 trading enabled)
+
+===========================================
+SIGNAL GENERATION (SIMULATED)
+===========================================
+Signal Probability: 90% chance of BUY/SELL signal
+Signal Strength: 8.0-9.8 for strong signals
+Minimum Strength: 6.0 to execute trade
+Price Movement: ±3% random volatility
+ATR Range: 0.8%-2.5% of price
+
+===========================================
+PHASE 1 SUCCESS METRICS
+===========================================
+PHASE1_TARGETS = {
+    'daily_profit_target': 0.54,      # $0.54 per day (18%)
+    'weekly_profit_target': 3.80,    # $3.80 by week end
+    'win_rate_target': 0.60,          # 60% win rate needed
+    'max_daily_loss': 0.45,          # Stop at $0.45 loss (15%)
+    'phase_complete_balance': 4.0,    # Complete at $4 balance
+}
+
+===========================================
+BACKTESTING INSTRUCTIONS
+===========================================
+1. Initialize with $3.00 balance
+2. Use 2x leverage (effective $6 buying power)
+3. Scan all 10 pairs every 2 seconds
+4. Generate 90% chance of BUY/SELL signals
+5. Execute trades with signal strength >= 6.0
+6. Risk 2% ($0.06) per trade
+7. Target 1.6% profit (0.8:1 ratio)
+8. Use ATR-based stop loss (2.5x ATR)
+9. Maximum 4 concurrent positions
+10. Stop at 25% daily loss or $4 target
+
+===========================================
+KEY PERFORMANCE INDICATORS
+===========================================
+- Win Rate: Target 60%+
+- Daily Profit: Target $0.54 (18%)
+- Weekly Growth: Target $3.80
+- Max Drawdown: 25%
+- Average Trade Duration: <4 hours
+- Signal Accuracy: 90% generation rate
+
+===========================================
+IMPLEMENTATION NOTES
+===========================================
+- Background trading thread runs every 2 seconds
+- Market data simulated with realistic volatility
+- EMA indicators generated with trend alignment
+- ATR calculated from price movements
+- Position sizing based on 2% risk rule
+- Trade history saved to JSON file
+- Real-time P&L tracking and display
+
+===========================================
+FILES INVOLVED
+===========================================
+- profitbot_dashboard.py     # Main bot implementation
+- config_phase1.py          # All configuration parameters
+- trade_history.json        # Persistent trade records
+
+===========================================
+HOSTING SETTINGS
+===========================================
+Host: 0.0.0.0
+Port: 5000
+Debug: False
+Background Thread: Daemon trading loop
+Auto-start: Bot starts automatically on server launch
+
+End of Settings Document
+===========================================
