@@ -17,10 +17,14 @@ from urllib3.exceptions import InsecureRequestWarning
 
 # Suppress insecure request warnings
 warnings.simplefilter('ignore', InsecureRequestWarning)
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from bot.data_loader import DataLoader
 from bot.strategy import SmartMoneyStrategy, SmartMoneyProStrategy, RSDTraderStrategy, EliteScalperStrategy, Scalper70Strategy, HyperScalper25Strategy, DiamondSniperStrategy
+from bot.strategy_optimized import Scalper30Strategy
+from bot.strategy_multitimeframe import MultiTimeframeScalperStrategy
+from bot.strategy_confluence import MarketConfluenceStrategy
+from bot.signal_intelligence import SignalIntelligence
 from bot.signal_loader import SignalLoader
 from bot.binance_exchange import BinanceExchange
 from bot.mexc_exchange import MEXCExchange
@@ -42,7 +46,14 @@ import json
 # --- CONFIGURATION ---
 STRATEGY_MAP = {
     "smart_money": SmartMoneyProStrategy, # Use Pro version for 50%+ win rate
-    "diamond_sniper": DiamondSniperStrategy
+    "diamond_sniper": DiamondSniperStrategy,
+    "scalper70": Scalper70Strategy,
+    "scalper30": Scalper30Strategy,  # New optimized strategy
+    "hyper25": HyperScalper25Strategy,
+    "elite": EliteScalperStrategy,
+    "rsd": RSDTraderStrategy,
+    "multitimeframe": MultiTimeframeScalperStrategy,  # New multi-timeframe strategy
+    "confluence": MarketConfluenceStrategy,
 }
 import argparse
 
@@ -52,7 +63,7 @@ parser.add_argument("--profile", type=str, default="default", help="Profile name
 parser.add_argument("--port", type=int, default=int(os.environ.get('PORT', '5000')), help="Port for the dashboard")
 parser.add_argument("--capital", type=float, default=None, help="Initial capital for this profile")
 parser.add_argument("--symbols_offset", type=int, default=0, help="Offset for market scanning")
-parser.add_argument("--strategy", type=str, default=os.environ.get('STRATEGY', 'smart_money'), help="Strategy to use: smart_money, rsd, elite, scalper70, hyper25, diamond")
+parser.add_argument("--strategy", type=str, default=os.environ.get('STRATEGY', 'smart_money'), help="Strategy to use: smart_money, rsd, elite, scalper70, scalper30, hyper25, diamond, multitimeframe, confluence")
 parser.add_argument("--max_trades", type=int, default=None, help="Maximum concurrent trades")
 parser.add_argument("--leverage", type=int, default=None, help="Leverage for this bot instance")
 parser.add_argument("--exchange", type=str, default=os.environ.get('EXCHANGE', 'bybit'), help="Exchange to use: binance, mexc, bybit")
@@ -81,25 +92,26 @@ TESTNET = os.environ.get('USE_TESTNET', 'false').lower() == 'true'
 # Priority: CLI Arg > Env Var > Default ($10.00)
 INITIAL_CAPITAL = args.capital if args.capital is not None else float(os.getenv("INITIAL_CAPITAL", "3.00"))
 SYMBOLS_OFFSET = args.symbols_offset if args.symbols_offset is not None else int(os.getenv("SYMBOLS_OFFSET", "0"))
-# Priority: CLI Arg > Env Var > Default (45)
-LEVERAGE = args.leverage if args.leverage is not None else int(os.environ.get('LEVERAGE', '45'))
+# Priority: CLI Arg > Env Var > Default (3)
+LEVERAGE = args.leverage if args.leverage is not None else int(os.environ.get('LEVERAGE', '3'))
 TIMEFRAME = '5m'
-TOP_N_SYMBOLS = int(os.environ.get('TOP_N_SYMBOLS', '60'))
+TOP_N_SYMBOLS = 1
 MIN_VOLUME_USD = float(os.environ.get('MIN_VOLUME_USD', '1000000'))
+TARGET_SYMBOL = "BTCUSDT"
 # DASHBOARD_PORT handled by argparse above
 BINANCE_FEE = 0.0005  # 0.05% taker fee (same for all Binance USDM)
 USE_REAL_EXCHANGE = os.environ.get('USE_REAL_EXCHANGE', 'false').lower() == 'true'
 if args.paper:
     USE_REAL_EXCHANGE = False
     logger.info("📄 FORCED PAPER TRADING MODE via CLI flag.")
-EXCHANGE_NAME = args.exchange.lower() if args.exchange else os.environ.get('EXCHANGE', 'binance').lower()
+EXCHANGE_NAME = "mexc"
 BINANCE_API_KEY = os.environ.get('BINANCE_API_KEY', '').strip()
 BINANCE_API_SECRET = os.environ.get('BINANCE_API_SECRET', '').strip()
 MEXC_API_KEY = os.environ.get('MEXC_API_KEY', '').strip()
 MEXC_API_SECRET = os.environ.get('MEXC_API_SECRET', '').strip()
 BYBIT_API_KEY = os.environ.get('BYBIT_API_KEY', '').strip()
 BYBIT_API_SECRET = os.environ.get('BYBIT_API_SECRET', '').strip()
-MAX_CONCURRENT_TRADES = args.max_trades if args.max_trades is not None else int(os.environ.get('MAX_CONCURRENT_TRADES', '15'))
+MAX_CONCURRENT_TRADES = args.max_trades if args.max_trades is not None else int(os.environ.get('MAX_CONCURRENT_TRADES', '3'))
 # If MAX_CONCURRENT_TRADES is very high (e.g. 999), we treat it as 'unlimited' 
 # and use a fixed capital partition for sizing.
 IS_UNLIMITED = MAX_CONCURRENT_TRADES >= 500
@@ -195,17 +207,20 @@ def sync_active_trades(global_account, max_concurrent):
             logger.info(f"Synced {len(active_trades)} active trades from history log.")
 
 
-def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
+def scan_symbol(symbol, data_loader, strategy, exchange, notifier, signal_intel):
     """
     Runs the trading loop for ONE symbol in its own thread.
     Uses the per-symbol min notional and fees from Binance exchangeInfo.
     All PnL is fee-inclusive (net profit after Binance fees).
     """
     logger.info(f"[{symbol}] Scanner started.")
-    exchange.symbol = symbol
+    trade_symbol = (getattr(strategy, "pair", None) or symbol).upper()
+    exchange.symbol = trade_symbol
+    if isinstance(exchange, BinanceExchange) and '/' not in trade_symbol and trade_symbol.endswith('USDT'):
+        exchange.symbol = f"{trade_symbol[:-4]}/USDT"
 
     # Fetch per-symbol Binance rules
-    info = data_loader.get_symbol_info(symbol)
+    info = data_loader.get_symbol_info(trade_symbol)
     min_notional = info['min_notional']           # e.g. $5 for DOGE, $100 for BTC
     taker_fee = info['taker_fee']                 # 0.05% for all USDM
     step_size = info['step_size']                 # lot size precision
@@ -227,7 +242,18 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     current_price = data_loader.fetch_ticker(symbol)
                     if current_price:
                         logger.info(f"[{symbol}] Manual Force Open: {side}")
-                        try_open_position(symbol, side, current_price, exchange, data_loader, notifier, datetime.utcnow(), provider="Manual Force")
+                        try_open_position(
+                            symbol,
+                            side,
+                            current_price,
+                            exchange,
+                            data_loader,
+                            signal_intel,
+                            notifier,
+                            datetime.utcnow(),
+                            provider="Manual Force",
+                            strategy=strategy
+                        )
                         # Skip full scan this cycle if we just opened manually
                         time.sleep(1)
                         continue
@@ -267,7 +293,19 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                         continue
 
             # 3. Normal Scanning (Fetch candles and calculate indicators)
-            data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=400) # Reduced limit to 400 for speed
+            try:
+                if hasattr(strategy, "fetch_market_data"):
+                    raw_market_data = strategy.fetch_market_data(symbol, data_loader)
+                    data_list = strategy.calculate_indicators(raw_market_data) if raw_market_data else None
+                else:
+                    data_list = data_loader.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=400) # Reduced limit to 400 for speed
+                    if data_list:
+                        data_list = strategy.calculate_indicators(data_list)
+            except Exception as e:
+                logger.error(f"[{symbol}] Data Fetch/Indicator Error: {e}")
+                time.sleep(10)
+                continue
+
             if not data_list:
                 time.sleep(5)
                 continue
@@ -277,7 +315,6 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
             # 4. Calculate indicators + signals
             try:
-                data_list = strategy.calculate_indicators(data_list)
                 data_list = strategy.generate_signals(data_list)
             except Exception as e:
                 logger.error(f"[{symbol}] Indicator/Signal Error: {e}")
@@ -312,14 +349,18 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
             sl_price = None
             tp_price = None
             if exchange.is_in_position:
-                with symbol_states_lock:
-                    tsl_pct = symbol_states.get(symbol, {}).get('trailing_sl_pct', -0.02)
-                if exchange.position_direction == 'LONG':
-                    sl_price = round(exchange.entry_price * (1 + tsl_pct), 6)
-                    tp_price = round(exchange.entry_price * 1.03, 6)  # 3% TP target
-                elif exchange.position_direction == 'SHORT':
-                    sl_price = round(exchange.entry_price * (1 - tsl_pct), 6)
-                    tp_price = round(exchange.entry_price * 0.97, 6)
+                if getattr(strategy, "use_strategy_position_management", False):
+                    sl_price = round(getattr(exchange, 'stop_loss', 0) or 0, 6) or None
+                    tp_price = round(getattr(exchange, 'take_profit', 0) or 0, 6) or None
+                else:
+                    with symbol_states_lock:
+                        tsl_pct = symbol_states.get(symbol, {}).get('trailing_sl_pct', -0.02)
+                    if exchange.position_direction == 'LONG':
+                        sl_price = round(exchange.entry_price * (1 + tsl_pct), 6)
+                        tp_price = round(exchange.entry_price * 1.03, 6)  # 3% TP target
+                    elif exchange.position_direction == 'SHORT':
+                        sl_price = round(exchange.entry_price * (1 - tsl_pct), 6)
+                        tp_price = round(exchange.entry_price * 0.97, 6)
             
             with symbol_states_lock:
                 symbol_states[symbol] = {
@@ -338,10 +379,18 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     "macd_signal": round(last_candle.get('MACD_Signal', 0) or 0, 6),
                     "macd_hist": round(last_candle.get('MACD_Hist', 0) or 0, 6),
                     "ema200": round(last_candle.get('EMA_200', 0) or 0, 6),
+                    "adx": round(last_candle.get('ADX', 0) or 0, 6),
+                    "stoch_rsi_k": round(last_candle.get('STOCH_RSI_K', 0) or 0, 6),
+                    "stoch_rsi_d": round(last_candle.get('STOCH_RSI_D', 0) or 0, 6),
+                    "trend_alignment": last_candle.get('TREND_ALIGNMENT', ''),
                     "atr": round(last_candle.get('ATR', 0) or 0, 6),
                     "bb_upper": round(last_candle.get('BB_Upper', 0) or 0, 6),
                     "bb_middle": round(last_candle.get('BB_Middle', 0) or 0, 6),
                     "bb_lower": round(last_candle.get('BB_Lower', 0) or 0, 6),
+                    # AI Context
+                    "ai_validation": last_candle.get('ai_validation', 'NONE'),
+                    "ai_justification": last_candle.get('ai_justification', ''),
+                    "signal_reason": last_candle.get('signal_reason', ''),
                     # TP/SL
                     "sl_price": sl_price,
                     "tp_price": tp_price,
@@ -358,8 +407,26 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
             close_reason = ""
 
             if exchange.is_in_position:
+                if getattr(strategy, "use_strategy_position_management", False):
+                    with active_trades_lock:
+                        entry_time = active_trades.get(symbol, datetime.utcnow())
+
+                    position = {
+                        'side': exchange.position_direction,
+                        'entry_price': exchange.entry_price,
+                        'stop_loss': getattr(exchange, 'stop_loss', None),
+                        'take_profit': getattr(exchange, 'take_profit', None)
+                    }
+                    close_position, close_reason = strategy.should_exit_position(
+                        position,
+                        data_list[-1],
+                        entry_time,
+                        datetime.utcnow()
+                    )
+                    if close_position:
+                        logger.info(f"[{symbol}] {close_reason}")
                 # 6a. Technical Exits (Requires Indicators)
-                if 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
+                elif 'ATR' in data_list[-1] and data_list[-1]['ATR'] is not None:
                     entry_val = exchange.position_size * exchange.entry_price
                     upnl_pct = upnl_net / entry_val if entry_val > 0 else 0
                     
@@ -462,6 +529,10 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
                     with symbol_states_lock:
                         if 'trailing_sl_pct' in symbol_states[symbol]:
                             del symbol_states[symbol]['trailing_sl_pct']
+                    if hasattr(exchange, 'stop_loss'):
+                        exchange.stop_loss = None
+                    if hasattr(exchange, 'take_profit'):
+                        exchange.take_profit = None
 
                     emoji = "✅" if net_pnl > 0 else "❌"
                     msg = (
@@ -479,7 +550,18 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
 
             # 5. Open new position (Technical Signals)
             if not exchange.is_in_position and latest_signal in ['LONG', 'SHORT']:
-                try_open_position(symbol, latest_signal, current_price, exchange, data_loader, signal_intel, notifier, latest_time)
+                try_open_position(
+                    symbol,
+                    latest_signal,
+                    current_price,
+                    exchange,
+                    data_loader,
+                    signal_intel,
+                    notifier,
+                    latest_time,
+                    strategy=strategy,
+                    signal_context=data_list[-1]
+                )
 
         except Exception as e:
             logger.error(f"[{symbol}] Error: {e}")
@@ -487,131 +569,154 @@ def scan_symbol(symbol, data_loader, strategy, exchange, notifier):
         time.sleep(1)  # Minimal sleep for zero-delay hyperscaling (1s)
 
 
-def try_open_position(symbol, side, current_price, exchange, data_loader, notifier, timestamp, provider=None):
+def try_open_position(symbol, side, current_price, exchange, data_loader, signal_intel, notifier, timestamp, provider=None, strategy=None, signal_context=None):
     """Shared logic for opening a position from any source (technical)."""
-    with active_trades_lock:
-        # 0. Circuit Breaker Check
-        global loss_streak
-        if loss_streak["cooldown_until"] and datetime.utcnow() < loss_streak["cooldown_until"]:
-            if time.time() % 300 < 1: # Log once every 5 mins
-                logger.info(f"[{symbol}] Skipping entry: Bot is in COOLDOWN until {loss_streak['cooldown_until']}")
-            return False
-        elif loss_streak["cooldown_until"] and datetime.utcnow() >= loss_streak["cooldown_until"]:
-            logger.info("🕒 Cooldown period finished. Resuming normal operations.")
-            loss_streak["cooldown_until"] = None
-            save_bot_state()
+    try:
+        with active_trades_lock:
+            # 0. Circuit Breaker Check
+            global loss_streak
+            if loss_streak["cooldown_until"] and datetime.utcnow() < loss_streak["cooldown_until"]:
+                if time.time() % 300 < 1: # Log once every 5 mins
+                    logger.info(f"[{symbol}] Skipping entry: Bot is in COOLDOWN until {loss_streak['cooldown_until']}")
+                return False
+            elif loss_streak["cooldown_until"] and datetime.utcnow() >= loss_streak["cooldown_until"]:
+                logger.info("🕒 Cooldown period finished. Resuming normal operations.")
+                loss_streak["cooldown_until"] = None
+                save_bot_state()
 
-        # 1. Filter Check (Removed Telegram Signal Logic)
+            # 1. General Limits
+            if not allow_new_trades["value"]:
+                if time.time() % 60 < 1:
+                    logger.info(f"[{symbol}] New trades are PAUSED via dashboard.")
+                return False
+                
+            if not IS_UNLIMITED and len(active_trades) >= MAX_CONCURRENT_TRADES:
+                if time.time() % 60 < 1:
+                    logger.info(f"[{symbol}] Limit reached ({len(active_trades)}/{MAX_CONCURRENT_TRADES}). Skipping {side}.")
+                return False
 
-        # 2. General Limits
-        if not allow_new_trades["value"]:
-            if time.time() % 60 < 1:
-                logger.info(f"[{symbol}] New trades are PAUSED via dashboard.")
-            return False
+            if symbol in active_trades:
+                return False
+
+            # 2. Market Info for sizing
+            trade_symbol = (getattr(strategy, "pair", None) or symbol).upper()
+            exchange.symbol = trade_symbol
+            if isinstance(exchange, BinanceExchange) and '/' not in trade_symbol and trade_symbol.endswith('USDT'):
+                exchange.symbol = f"{trade_symbol[:-4]}/USDT"
+
+            info = data_loader.get_symbol_info(trade_symbol)
+            if not info: 
+                logger.error(f"[{trade_symbol}] Could not get symbol info for sizing.")
+                return False
             
-        if not IS_UNLIMITED and len(active_trades) >= MAX_CONCURRENT_TRADES:
-            if time.time() % 60 < 1:
-                logger.info(f"[{symbol}] Limit reached ({len(active_trades)}/{MAX_CONCURRENT_TRADES}). Skipping {side}.")
-            return False
+            step_size = info.get('step_size', 0.001)
+            min_notional = info.get('min_notional', 5.0)
 
-        if symbol in active_trades:
-            return False
+            # 3. Sizing logic for low capital ($3.00)
+            current_bal = exchange.cash
+            
+            # STOP TRADING if balance is too low to sustain trades ($1.00 minimum safety)
+            if current_bal < 1.00:
+                if time.time() % 300 < 1:
+                    logger.warning(f"[{symbol}] Balance too low (${current_bal:.2f}). Trading halted for safety.")
+                return False
 
-        # 3. Market Info for sizing
-        info = data_loader.get_symbol_info(symbol)
-        if not info: 
-            logger.error(f"[{symbol}] Could not get symbol info for sizing.")
-            return False
-        
-        step_size = info.get('step_size', 0.001)
-        min_notional = info.get('min_notional', 5.0)
-        taker_fee = 0.0005 # Default
+            if strategy and getattr(strategy, "use_strategy_position_sizing", False):
+                # For small accounts (<$10), we allow up to 10x leverage to hit min notional
+                leverage_cap = 5 if current_bal >= 10.0 else 10
+                actual_leverage = max(1, min(int(getattr(strategy, "leverage", LEVERAGE) or LEVERAGE), leverage_cap))
+                
+                atr_value = signal_context.get('ATR') if isinstance(signal_context, dict) else None
 
-        # 4. Sizing logic for low capital ($3.00)
-        current_bal = exchange.cash
-        
-        if current_bal < 0.10:
-            if time.time() % 60 < 1:
-                if USE_REAL_EXCHANGE:
-                    logger.warning(f"[{symbol}] REAL BALANCE IS ZERO ($0.00) on Bybit. Cannot trade! Please deposit at least $3 to Bybit Testnet/Mainnet.")
-                else:
-                    logger.warning(f"[{symbol}] Insufficient balance (${current_bal:.2f}) to open trade.")
-            return False
+                stop_loss = None
+                if hasattr(strategy, "calculate_stop_loss"):
+                    stop_loss = strategy.calculate_stop_loss(current_price, side, atr_value)
+                take_profit = None
+                if hasattr(strategy, "calculate_take_profit"):
+                    take_profit = strategy.calculate_take_profit(current_price, side, atr_value)
 
-        # If balance is low, we prioritize opening AT LEAST one trade
-        # rather than splitting $3 into 15 tiny pieces ($0.20 each) which is untradable.
-        min_required_margin = min_notional / 20.0 # Estimate margin for 20x
-        
-        if IS_UNLIMITED:
-            capital_to_risk = INITIAL_CAPITAL / 10
-        else:
-            # OPTION 1: Dynamic Compounding
-            # Risk exactly 1/Nth of your CURRENT balance on every trade.
-            # This grows lot size on wins and shrinks it on losses.
+                size = 0.0
+                if hasattr(strategy, "calculate_position_size") and stop_loss:
+                    size = strategy.calculate_position_size(current_bal, current_price, stop_loss)
+                size = data_loader.round_step_size(size, step_size)
+                target_notional = size * current_price
+
+                if size <= 0 or target_notional < min_notional:
+                    logger.warning(
+                        f"[{trade_symbol}] Strategy sizing rejected entry. "
+                        f"Notional=${target_notional:.2f}, MinNotional=${min_notional:.2f}, "
+                        f"Balance=${current_bal:.2f}, Leverage={actual_leverage}x"
+                    )
+                    return False
+
+                exchange.leverage = actual_leverage
+                exchange.entry_order_type = getattr(strategy, "order_type", "market")
+                exchange.stop_loss = stop_loss
+                exchange.take_profit = take_profit
+
+                success = exchange.execute_market_order(side, size, current_price, timestamp)
+                if success:
+                    active_trades[symbol] = datetime.utcnow()
+                    order_type = getattr(strategy, "order_type", "market").upper()
+                    safe_send_message(
+                        notifier,
+                        f"🚀 *{trade_symbol} — {'Elite ' if provider else ''}{side}*\n"
+                        f"Source: `{provider if provider else 'Technical'}`\n"
+                        f"Order: `{order_type}` | Entry: `${current_price:.4f}` | Notional: `${target_notional:.2f}`\n"
+                        f"Risking: `${(target_notional / actual_leverage):.2f}` ({actual_leverage}x)\n"
+                        f"SL: `${stop_loss:.4f}` | TP: `${take_profit:.4f}`\n"
+                    )
+                    return True
+
+                return False
+
+            # --- DYNAMIC SIZING FOR NON-STRATEGY MODES ---
             capital_to_risk = current_bal / MAX_CONCURRENT_TRADES
-            
-            # Ensure we at least meet the minimum required margin for the exchange
-            # (Margin = Notional / Leverage)
-            min_required_margin = (min_notional * 1.05) / 50.0 # 50x leverage
+            min_required_margin = (min_notional * 1.05) / 5.0 # 5x leverage
             if capital_to_risk < min_required_margin:
-                # If 10% is too small for a $5 notional trade, use the minimum required
-                # but never more than 50% of our current cash.
                 capital_to_risk = min(current_bal * 0.5, min_required_margin)
 
-        if capital_to_risk < 0.10: 
-            logger.error(f"[{symbol}] Insufficient capital to risk (${capital_to_risk:.2f}).")
-            return False
+            if capital_to_risk < 0.10: 
+                logger.error(f"[{symbol}] Insufficient capital to risk (${capital_to_risk:.2f}).")
+                return False
 
-        # Calculate exact leverage needed for $3 balance
-        # If balance is $3 and min_notional is $5, we need at least 1.66x leverage.
-        # We target a bit above min_notional (1.1x) to avoid order rejection.
-        target_notional = max(min_notional * 1.1, 5.5) # Minimum target notional
-        
-        # Calculate leverage: Notional / Capital
-        required_lev = int(target_notional / capital_to_risk) + 1
-        
-        # Stay within safe limits (up to 50x for low capital is realistic, 75x is aggressive)
-        actual_leverage = max(1, min(50, required_lev))
-        
-        # Re-calculate notional based on leverage
-        target_notional = capital_to_risk * actual_leverage * 0.95 # Use 95% of power
-        
-        raw_size = target_notional / current_price
-        size = data_loader.round_step_size(raw_size, step_size)
-        
-        # DEBUG LOGGING (Using INFO for visibility)
-        logger.info(f"[{symbol}] Sizing Debug: target_notional=${target_notional:.2f}, raw_size={raw_size:.8f}, step_size={step_size}, rounded_size={size}")
-        
-        # Final validation
-        if (size * current_price) < min_notional:
-            # Try one last push: increase leverage if possible
-            if actual_leverage < 75:
-                actual_leverage = min(75, actual_leverage + 5)
-                target_notional = capital_to_risk * actual_leverage * 0.95
-                raw_size = target_notional / current_price
-                size = data_loader.round_step_size(raw_size, step_size)
-
-        # Detailed logging for user visibility
-        logger.info(f"[{symbol}] Low-Cap Sizing: Min Notional ${min_notional} | Using {actual_leverage}x leverage for ${capital_to_risk:.2f} capital")
-
-        if size <= 0: 
-            logger.error(f"[{symbol}] Calculated size is zero. Notional: ${target_notional:.2f}, Price: ${current_price:.4f}")
-            return False
-
-        # 5. Execute
-        exchange.leverage = actual_leverage # CRITICAL: Ensure paper exchange uses the same leverage for margin calculation
-        success = exchange.execute_market_order(side, size, current_price, timestamp)
-        if success:
-            active_trades[symbol] = datetime.utcnow()
-            safe_send_message(notifier,
-                f"🚀 *{symbol} — {'Elite ' if provider else ''}{side}*\n"
-                f"Source: `{provider if provider else 'Technical'}`\n"
-                f"Entry: `${current_price:.4f}` | Notional: `${(size*current_price):.2f}`\n"
-                f"Risking: `${((size*current_price)/actual_leverage):.2f}` ({actual_leverage}x)\n"
-            )
-            return True
+            target_notional = max(min_notional * 1.1, 5.5) 
+            required_lev = int(target_notional / capital_to_risk) + 1
+            actual_leverage = max(1, min(5, required_lev))
+            target_notional = capital_to_risk * actual_leverage * 0.95 
             
-    return False
+            raw_size = target_notional / current_price
+            size = data_loader.round_step_size(raw_size, step_size)
+            
+            # Final validation
+            if (size * current_price) < min_notional:
+                if actual_leverage < 10:
+                    actual_leverage = min(10, actual_leverage + 2)
+                    target_notional = capital_to_risk * actual_leverage * 0.95
+                    raw_size = target_notional / current_price
+                    size = data_loader.round_step_size(raw_size, step_size)
+
+            if size <= 0: 
+                logger.error(f"[{trade_symbol}] Calculated size is zero. Notional: ${target_notional:.2f}, Price: ${current_price:.4f}")
+                return False
+
+            # Execute
+            exchange.leverage = actual_leverage 
+            success = exchange.execute_market_order(side, size, current_price, timestamp)
+            if success:
+                active_trades[symbol] = datetime.utcnow()
+                safe_send_message(notifier,
+                    f"🚀 *{symbol} — {'Elite ' if provider else ''}{side}*\n"
+                    f"Source: `{provider if provider else 'Technical'}`\n"
+                    f"Entry: `${current_price:.4f}` | Notional: `${(size*current_price):.2f}`\n"
+                    f"Risking: `${((size*current_price)/actual_leverage):.2f}` ({actual_leverage}x)\n"
+                )
+                return True
+                
+        return False
+    except Exception as e:
+        logger.error(f"[{symbol}] CRITICAL ERROR in try_open_position: {e}")
+        return False
 
 
 def external_signal_loop(signal_loader, signal_intel, data_loader, notifier, global_account):
@@ -621,8 +726,8 @@ def external_signal_loop(signal_loader, signal_intel, data_loader, notifier, glo
     
     while bot_running["value"]:
         try:
-            # Check for signals from last 5 minutes
-            new_ext_signals = signal_loader.get_new_signals(window_minutes=5)
+            # Check for signals from last 60 minutes
+            new_ext_signals = signal_loader.get_new_signals(window_minutes=60)
             for s in new_ext_signals:
                 sig_id = f"{s['symbol']}_{s['side']}_{s['original_date']}"
                 if sig_id in processed_dates: continue
@@ -635,18 +740,18 @@ def external_signal_loop(signal_loader, signal_intel, data_loader, notifier, glo
                 if signal_intel.filter_signal(symbol, s['side'], provider=provider, min_score=0.7):
                     # For external execution, we create a temporary exchange wrapper
                     # that shares the global account.
-                    temp_exchange = PaperExchange(initial_capital=global_account.initial_capital)
+                    temp_exchange = PaperExchange(initial_capital=global_account.get_cash())
                     temp_exchange.shared_account = global_account
                     
                     # Fetch current price for execution
-                    ticker = data_loader.get_ticker(symbol)
+                    ticker = data_loader.fetch_ticker(symbol)
                     if ticker:
                         curr_p = ticker['last']
                         success = try_open_position(symbol, s['side'], curr_p, temp_exchange, data_loader, signal_intel, notifier, datetime.utcnow(), provider=provider)
                         if success:
                             logger.info(f"🏆 Successfully executed external signal for {symbol}")
             
-            time.sleep(15) # Scan more frequently (15s)
+            time.sleep(10) # Reduced from 15s for testing
         except Exception as e:
             logger.error(f"Error in external signal loop: {e}")
             time.sleep(10)
@@ -774,9 +879,36 @@ def run_paper_trading():
 
     global args, INITIAL_CAPITAL
     # --- Initialize Components ---
-    data_loader = DataLoader(exchange_id='mexc', testnet=TESTNET) # Use MEXC for data fetching to avoid Binance geo-blocks
+    data_loader = DataLoader(exchange_id=EXCHANGE_NAME, testnet=TESTNET)
+    if EXCHANGE_NAME == "binance":
+        try:
+            import ccxt
+            public_client = ccxt.binance({
+                'enableRateLimit': True,
+                'options': {
+                    'defaultType': 'future',
+                    'adjustForTimeDifference': True,
+                }
+            })
+            public_client.load_markets()
+            data_loader.ccxt_client = public_client
+            logger.info("Initialized public Binance futures market-data client.")
+        except Exception as exc:
+            logger.warning(f"Binance market-data client unavailable, falling back to MEXC public data: {exc}")
     notifier = TelegramNotifier(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-    ai_brain = AIBrain(GEMINI_API_KEY) if AIBrain and GEMINI_API_KEY else None
+    
+    # Configuration
+    AI_PROVIDER = os.environ.get('AI_PROVIDER', 'gemini').lower()
+    DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '').strip()
+
+    # Initialize AI Brain
+    if AIBrain:
+        ai_brain = AIBrain(api_key=GEMINI_API_KEY, provider=AI_PROVIDER, deepseek_key=DEEPSEEK_API_KEY)
+    else:
+        ai_brain = None
+        
+    signal_intel = SignalIntelligence(ai_brain=ai_brain)  # Initialize signal intelligence
+    signal_loader = SignalLoader()  # Initialize signal loader
     dashboard_state["use_real_exchange"] = USE_REAL_EXCHANGE
     global_account = PaperAccount(initial_capital=INITIAL_CAPITAL, log_file=TRADE_LOG_FILE)
     
@@ -801,20 +933,42 @@ def run_paper_trading():
     dashboard_thread.start()
     logger.info(f"📊 Dashboard: http://localhost:{DASHBOARD_PORT}")
 
-    # 3. Start Telegram Listener
-    tg_thread = threading.Thread(target=telegram_listener, args=(notifier, ai_brain), daemon=True)
-    tg_thread.start()
+    # 6. Start External Signal Loop
+    signal_thread = threading.Thread(target=external_signal_loop, args=(signal_loader, signal_intel, data_loader, notifier, global_account), daemon=True)
+    signal_thread.start()
 
-    # 2. Fetch top symbols dynamically
-    print(f"DIAGNOSTIC: TOP_N_SYMBOLS={TOP_N_SYMBOLS}, MIN_VOLUME_USD={MIN_VOLUME_USD}, SYMBOLS_OFFSET={SYMBOLS_OFFSET}", flush=True)
-    logger.info(f"Fetching top Futures symbols (n={TOP_N_SYMBOLS}, offset={SYMBOLS_OFFSET})...")
-    symbols = data_loader.get_top_futures_symbols(top_n=TOP_N_SYMBOLS, min_volume_usd=MIN_VOLUME_USD, offset=SYMBOLS_OFFSET)
-    print(f"DIAGNOSTIC: Fetched {len(symbols)} symbols", flush=True)
-    logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
+    # 7. Start Telegram Command Listener
+    if ai_brain:
+        listener_thread = threading.Thread(target=telegram_listener, args=(notifier, ai_brain), daemon=True)
+        listener_thread.start()
+        logger.info("📡 Telegram Command Listener started (AI Brain enabled).")
 
     # 0. Load persisted state
     load_bot_state()
     sync_active_trades(global_account, MAX_CONCURRENT_TRADES)
+
+    # 2. Resolve symbols to scan
+    with active_trades_lock:
+        active_symbols = list(active_trades.keys())
+
+    if TARGET_SYMBOL:
+        logger.info(f"Using explicit target symbol override: {TARGET_SYMBOL}")
+        symbols = [TARGET_SYMBOL]
+    else:
+        logger.info(f"Fetching top Futures symbols (n={TOP_N_SYMBOLS}, offset={SYMBOLS_OFFSET})...")
+        symbols = data_loader.get_top_futures_symbols(
+            top_n=TOP_N_SYMBOLS,
+            min_volume_usd=MIN_VOLUME_USD,
+            offset=SYMBOLS_OFFSET
+        )
+    
+    # Ensure active trades are always in the scan list so they can be managed/closed
+    for sym in active_symbols:
+        if sym not in symbols:
+            symbols.append(sym)
+            
+    print(f"DIAGNOSTIC: Fetched {len(symbols)} symbols", flush=True)
+    logger.info(f"Will scan {len(symbols)} symbols: {symbols}")
 
     # 4. Send startup notification
     safe_send_message(notifier,
@@ -870,23 +1024,30 @@ def run_paper_trading():
         except Exception as e:
             logger.error(f"❌ Failed to initialize master exchange client: {e}")
 
-    logger.info(f"Starting scanners for {len(symbols)} symbols using strategy {args.strategy}...")
-    for symbol in symbols:
-        def thread_wrapper(sym, current_args, m_client):
-            try:
-                # Initialize per-thread components
-                if current_args.strategy == "rsd":
-                    strat = RSDTraderStrategy(leverage=LEVERAGE)
-                elif current_args.strategy == "elite":
-                    strat = EliteScalperStrategy(leverage=LEVERAGE)
-                elif current_args.strategy == "scalper70":
-                    strat = Scalper70Strategy(leverage=LEVERAGE)
-                elif current_args.strategy == "hyper25":
-                    strat = HyperScalper25Strategy(leverage=LEVERAGE)
-                elif current_args.strategy == "diamond":
-                    strat = DiamondSniperStrategy(leverage=LEVERAGE)
-                else:
-                    strat = SmartMoneyStrategy(leverage=LEVERAGE)
+# Priority: CLI Arg > Env Var > Default (multitimeframe)
+STRATEGY_NAME = args.strategy if args.strategy else os.environ.get('STRATEGY', 'multitimeframe')
+
+logger.info(f"Starting scanners for {len(symbols)} symbols using strategy {STRATEGY_NAME}...")
+for symbol in symbols:
+    def thread_wrapper(sym, current_args, m_client, strat_name):
+        try:
+            # Initialize per-thread components
+            if strat_name == "rsd":
+                strat = RSDTraderStrategy(leverage=LEVERAGE)
+            elif strat_name == "elite":
+                strat = EliteScalperStrategy(leverage=LEVERAGE)
+            elif strat_name == "scalper70":
+                strat = Scalper70Strategy(leverage=LEVERAGE)
+            elif strat_name == "hyper25":
+                strat = HyperScalper25Strategy(leverage=LEVERAGE)
+            elif strat_name == "diamond":
+                strat = DiamondSniperStrategy(leverage=LEVERAGE)
+            elif strat_name == "multitimeframe":
+                strat = MultiTimeframeScalperStrategy(leverage=LEVERAGE, signal_intel=signal_intel)
+            elif strat_name == "confluence":
+                strat = MarketConfluenceStrategy(leverage=LEVERAGE)
+            else:
+                strat = SmartMoneyStrategy(leverage=LEVERAGE)
                 
                 if USE_REAL_EXCHANGE:
                     if EXCHANGE_NAME == "bybit" and BYBIT_API_KEY and BYBIT_API_SECRET:
@@ -940,13 +1101,13 @@ def run_paper_trading():
                                     exch.entry_fee_paid = trade.get('fee', 0.0)
                                 break
 
-                scan_symbol(sym, data_loader, strat, exch, notifier)
+                scan_symbol(sym, data_loader, strat, exch, notifier, signal_intel)
             except Exception as e:
                 logger.error(f"Thread for {sym} failed: {e}")
 
         t = threading.Thread(
             target=thread_wrapper,
-            args=(symbol, args, master_client),
+            args=(symbol, args, master_client, STRATEGY_NAME),
             daemon=True,
             name=f"Scanner-{symbol}"
         )
@@ -987,7 +1148,7 @@ def run_paper_trading():
             dashboard_state["max_trades"] = MAX_CONCURRENT_TRADES
             dashboard_state["bot_status"] = "RUNNING 🟢" if bot_running["value"] else "STOPPED 🛑"
             dashboard_state["entries_allowed"] = allow_new_trades["value"]
-            dashboard_state["strategy_name"] = args.strategy
+            dashboard_state["strategy_name"] = STRATEGY_NAME
 
             # -- Handle Dashboard Toggle Request --
             if set_entries_state[0] is not None:

@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  profitbot:
+    build: .
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      - STRATEGY=multitimeframe
+      - LEVERAGE=3
+      - MAX_TRADES=3
+      - PORT=5000
+    volumes:
+      - bot_data:/app/data
+    restart: always
+
+volumes:
+  bot_data:

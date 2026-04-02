@@ -1,0 +1,28 @@
+{
+  "symbol": "BTCUSDT",
+  "days": 20,
+  "mode": "static",
+  "capital": 5.0,
+  "leverage": 5,
+  "risk_per_trade": 0.01,
+  "min_notional": 20.0,
+  "signals": {
+    "NONE": 5460
+  },
+  "signal_reasons_top": [],
+  "blocked_entries": {},
+  "executed_trades": 0,
+  "wins": 0,
+  "losses": 0,
+  "win_rate_pct": 0.0,
+  "starting_equity": 5.0,
+  "ending_equity": 5.0,
+  "return_pct": 0.0,
+  "max_drawdown_pct": 0.0,
+  "assumptions": {
+    "static_mode": "Reuses the current market_context.json snapshot for every historical candle.",
+    "proxy_mode": "Derives funding, retail crowding, fear/greed, and OI proxies from historical price/volume. This is an inference, not real historical sentiment data.",
+    "execution": "Single BTC position at a time, 0.05% taker fee per side, conservative intrabar exits when both TP and SL touch the same candle."
+  },
+  "trades": []
+}

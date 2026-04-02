@@ -170,6 +170,7 @@ class PaperExchange:
         self.leverage = 1.0  # Default, set by bot
         self.entry_margin = 0.0
         self.entry_time = None
+        self.entry_order_type = "market"
         logger.info(f"Initialized Paper Exchange with {self.taker_fee*100}% Taker Fee.")
 
     @property
@@ -184,7 +185,10 @@ class PaperExchange:
 
     def execute_market_order(self, direction, size, current_price, timestamp):
         """Executes a simulated market order (long, short, or close)."""
-        fee_paid_usd = size * current_price * self.taker_fee
+        fee_rate = self.taker_fee
+        if direction in ['LONG', 'SHORT'] and getattr(self, 'entry_order_type', 'market') == 'limit':
+            fee_rate = self.maker_fee
+        fee_paid_usd = size * current_price * fee_rate
         order_value = size * current_price
 
         if direction in ['LONG', 'SHORT']:

@@ -119,6 +119,9 @@ body { font-family:'Inter',sans-serif; background:var(--bg); color:var(--text); 
 .badge.buy { background:rgba(0,229,160,.15); color:var(--green); }
 .badge.sell { background:rgba(255,77,109,.15); color:var(--red); }
 .badge.scanning { background:rgba(79,142,247,.12); color:var(--blue); }
+.badge.ai-approved { background:rgba(0,229,160,.2); color:var(--green); border:1px solid var(--green); }
+.badge.ai-rejected { background:rgba(255,77,109,.2); color:var(--red); border:1px solid var(--red); }
+.badge.ai-waiting { background:rgba(245,166,35,.15); color:var(--yellow); }
 .badge.neutral,.badge.none { background:rgba(90,112,153,.12); color:var(--muted); }
 
 /* Sidebar Chart Pane instead of Modal */
@@ -219,7 +222,7 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
             <div class="section-hdr"><span>🌐 All Markets</span><span id="mkt-count" style="color:var(--muted);font-size:0.8rem"></span></div>
             <div style="overflow-x:auto">
             <table><thead><tr>
-                <th>Symbol</th><th>Price</th><th>Signal</th><th>Position</th>
+                <th>Symbol</th><th>Price</th><th>Signal</th><th>DeepSeek AI</th><th>Position</th>
                 <th>RSI</th><th>MACD Hist</th><th>EMA200</th><th>ATR</th>
                 <th>BB Upper</th><th>BB Lower</th><th>Entry</th><th>TP</th><th>SL</th><th>uPnL</th>
             </tr></thead>
@@ -269,6 +272,20 @@ input:checked + .slider:before { transform: translateX(-31px); content: "ON"; ba
             <div class="close-btn" onclick="closeModal()">✕</div>
         </div>
         <div class="modal-chart" id="modal-chart"></div>
+        
+        <div id="ai-analysis-box" style="margin-top:12px; background:rgba(79,142,247,0.05); border:1px solid var(--blue); border-radius:12px; padding:14px; display:none">
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+                <span style="font-size:1.2rem">🤖</span>
+                <strong style="color:var(--blue); font-size:0.85rem; text-transform:uppercase; letter-spacing:0.05em">DeepSeek AI Analysis</strong>
+                <span id="ai-status-badge" class="badge">NONE</span>
+            </div>
+            <div id="ai-justification" style="font-size:0.82rem; line-height:1.5; color:var(--text); font-style:italic">
+                DeepSeek is currently scanning this market for setup confirmation...
+            </div>
+            <div id="ai-signal-reason" style="font-size:0.75rem; margin-top:8px; color:var(--muted); border-top:1px solid rgba(255,255,255,0.05); padding-top:8px">
+            </div>
+        </div>
+
         <div class="indicator-row" id="modal-inds"></div>
         <div class="trade-info" id="modal-trade" style="display:none"></div>
         <div class="strategy-box" id="strategy-info-box">
@@ -558,7 +575,8 @@ async function refresh() {
             "smart_money": "• <strong>EMA 200</strong> — Trend filter<br>• <strong>Bollinger Bands</strong> — Entry trigger<br>• <strong>RSI</strong> — Momentum filter",
             "scalper70": "• <strong>EMA 200 + 50</strong> — Trend confluence<br>• <strong>RSI Sniper</strong> — Oversold/Overbought entries<br>• <strong>MACD Hist</strong> — Reversal confirmation",
             "hyper25": "• <strong>9/21 EMA Cross</strong> — High-speed momentum<br>• <strong>EMA 200 Guard</strong> — Directional safety<br>• <strong>Aggressive Compound</strong> — Fast growth logic",
-            "diamond": "• <strong>BB Squeeze</strong> — Low volatility detection<br>• <strong>Volume Breakout</strong> — Explosive entry trigger<br>• <strong>5-10% Targets</strong> — Big move sniping"
+            "diamond": "• <strong>BB Squeeze</strong> — Low volatility detection<br>• <strong>Volume Breakout</strong> — Explosive entry trigger<br>• <strong>5-10% Targets</strong> — Big move sniping",
+            "multitimeframe": "• <strong>DeepSeek AI</strong> — Final trade validation 🤖<br>• <strong>1h/4h/1d Alignment</strong> — Multi-timeframe trend filter<br>• <strong>1m Stoch RSI</strong> — Precision entries"
         };
         const activeStrat = d.strategy_name || "smart_money";
         const stratBox = document.getElementById('strat-desc');
@@ -714,6 +732,26 @@ function updateModal(sym, quiet=false) {
         });
     }
 
+    // AI Analysis Box
+    const aiBox = document.getElementById('ai-analysis-box');
+    const aiStatus = document.getElementById('ai-status-badge');
+    const aiJust = document.getElementById('ai-justification');
+    const aiReason = document.getElementById('ai-signal-reason');
+
+    if (s.ai_validation && s.ai_validation !== 'NONE') {
+        aiBox.style.display = 'block';
+        aiStatus.textContent = s.ai_validation;
+        aiStatus.className = 'badge ' + (s.ai_validation === 'APPROVED' ? 'ai-approved' : 'ai-rejected');
+        aiJust.textContent = s.ai_justification || 'No specific justification provided.';
+        aiReason.textContent = s.signal_reason || '';
+    } else {
+        aiBox.style.display = 'block';
+        aiStatus.textContent = 'WAITING';
+        aiStatus.className = 'badge ai-waiting';
+        aiJust.textContent = 'Multi-timeframe scanner is active. Waiting for signal confluence to trigger DeepSeek analysis...';
+        aiReason.textContent = s.signal_reason || 'Scanning...';
+    }
+
     // Indicators Row
     const rsiColor = getRsiColor(s.rsi);
     document.getElementById('modal-inds').innerHTML = `
@@ -786,10 +824,14 @@ function renderTable() {
         const inPos = s.direction && s.direction !== 'FLAT';
         const sig = s.signal || 'SCANNING';
         const sigClass = sig === 'LONG' ? 'buy' : sig === 'SHORT' ? 'sell' : 'neutral';
+        const aiVal = s.ai_validation || 'NONE';
+        const aiCls = aiVal === 'APPROVED' ? 'ai-approved' : aiVal === 'REJECTED' ? 'ai-rejected' : 'none';
+        
         return `<tr onclick="openModal('${sym}')" style="cursor:pointer">
             <td><strong>${sym}</strong></td>
             <td style="color:var(--blue)">$${(s.price||0).toLocaleString('en',{minimumFractionDigits:4,maximumFractionDigits:8})}</td>
             <td><span class="badge ${sigClass}">${sig}</span></td>
+            <td><span class="badge ${aiCls}" style="font-size:0.6rem">${aiVal}</span></td>
             <td><span class="badge ${inPos?s.direction.toLowerCase():'flat'}">${inPos?s.direction:'FLAT'}</span></td>
             <td style="color:${getRsiColor(s.rsi)}">${s.rsi !== null && s.rsi !== undefined ? s.rsi.toFixed(1) : '—'}</td>
             <td style="color:${getMacdColor(s.macd_hist)}">${s.macd_hist ? (s.macd_hist>0?'▲ ':'▼ ')+Math.abs(s.macd_hist).toFixed(6) : '—'}</td>

@@ -9,3 +9,17 @@ trade_log_*.json
 bot_state_*.json
 final_report.txt
 backtest_results.txt
+logs/
+data/
+*.db
+trade_history.json
+state.json
+vip_signals.json
+test_ai.py
+test_api_keys.py
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.log

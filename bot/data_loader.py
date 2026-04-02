@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 TAKER_FEE = 0.0005   # 0.05%
 MAKER_FEE = 0.0002   # 0.02%
 
+# Public REST endpoints used as resilient fallbacks when CCXT has transient issues.
+BINANCE_SPOT_BASE = "https://api.binance.com/api/v3"
+BINANCE_FUTURES_BASE = "https://fapi.binance.com/fapi/v1"
+
 # MEXC Public spot API - No US geo-block, no API key needed for basic market data
 MEXC_BASE = "https://api.mexc.com/api/v3"
 
@@ -247,48 +251,12 @@ class DataLoader:
                 if 'bybit' in str(self.ccxt_client.id).lower():
                     return None
 
-        # MEXC Spot Fallback (Only if CCXT is not Bybit)
-        endpoint = f"{MEXC_BASE}/klines"
-        
-        for attempt in range(3):
-            try:
-                # verify=False is used to bypass local SSL handshake failures
-                resp = session.get(endpoint, params={
-                    'symbol': symbol,
-                    'interval': timeframe,
-                    'limit': limit
-                }, timeout=10, verify=False)
-                
-                if resp.status_code == 429: # Rate limited
-                    logger.warning(f"MEXC rate limit hit for {symbol}. Backing off 3s...")
-                    time.sleep(3)
-                    continue
-                    
-                resp.raise_for_status()
-                data = resp.json()
-                
-                if not data:
-                    logger.warning(f"No OHLCV data returned from MEXC for {symbol}")
-                    return []
-                    
-                # Format: [timestamp, open, high, low, close, volume, ...]
-                return [{
-                    'timestamp': int(k[0]),
-                    'open': float(k[1]),
-                    'high': float(k[2]),
-                    'low': float(k[3]),
-                    'close': float(k[4]),
-                    'volume': float(k[5])
-                } for k in data]
-                
-            except Exception as e:
-                if attempt < 2:
-                    time.sleep(2)
-                    continue
-                logger.error(f"Error fetching {symbol} from MEXC (SSL/ConnectionIssue): {e}")
-                return None
-                
-        return None
+        if 'binance' in str(self.exchange_id).lower():
+            data = self._fetch_binance_rest_ohlcv(symbol, timeframe, limit)
+            if data is not None:
+                return data
+
+        return self._fetch_mexc_ohlcv(symbol, timeframe, limit)
 
     def fetch_ticker(self, symbol):
         """Fetches latest price from configured exchange."""
@@ -314,6 +282,11 @@ class DataLoader:
                 if 'bybit' in str(self.ccxt_client.id).lower():
                     return None
 
+        if 'binance' in str(self.exchange_id).lower():
+            price = self._fetch_binance_rest_ticker(symbol)
+            if price is not None:
+                return price
+
         try:
             resp = session.get(f"{MEXC_BASE}/ticker/price", params={'symbol': symbol}, timeout=5, verify=False)
             resp.raise_for_status()
@@ -321,3 +294,104 @@ class DataLoader:
         except Exception as e:
             logger.error(f"Error fetching MEXC ticker for {symbol}: {e}")
             return None
+
+    def _fetch_binance_rest_ohlcv(self, symbol, timeframe, limit):
+        endpoint = f"{BINANCE_FUTURES_BASE}/klines"
+        for attempt in range(3):
+            try:
+                resp = session.get(endpoint, params={
+                    'symbol': symbol,
+                    'interval': timeframe,
+                    'limit': limit
+                }, timeout=10, verify=False)
+
+                if resp.status_code == 429:
+                    logger.warning(f"Binance REST rate limit hit for {symbol}. Backing off 3s...")
+                    time.sleep(3)
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+
+                if not data:
+                    logger.warning(f"No OHLCV data returned from Binance REST for {symbol}")
+                    return []
+
+                return self._normalize_ohlcv_rows(data)
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                logger.error(f"Error fetching {symbol} from Binance REST: {e}")
+                return None
+
+    def _fetch_mexc_ohlcv(self, symbol, timeframe, limit):
+        endpoint = f"{MEXC_BASE}/klines"
+        mexc_timeframe = self._map_mexc_interval(timeframe)
+        if not mexc_timeframe:
+            logger.error(f"MEXC fallback does not support timeframe {timeframe} for {symbol}")
+            return None
+
+        for attempt in range(3):
+            try:
+                resp = session.get(endpoint, params={
+                    'symbol': symbol,
+                    'interval': mexc_timeframe,
+                    'limit': limit
+                }, timeout=10, verify=False)
+
+                if resp.status_code == 429:
+                    logger.warning(f"MEXC rate limit hit for {symbol}. Backing off 3s...")
+                    time.sleep(3)
+                    continue
+
+                resp.raise_for_status()
+                data = resp.json()
+
+                if not data:
+                    logger.warning(f"No OHLCV data returned from MEXC for {symbol}")
+                    return []
+
+                return self._normalize_ohlcv_rows(data)
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(2)
+                    continue
+                logger.error(f"Error fetching {symbol} from MEXC (SSL/ConnectionIssue): {e}")
+                return None
+
+    def _fetch_binance_rest_ticker(self, symbol):
+        endpoints = [
+            f"{BINANCE_FUTURES_BASE}/ticker/price",
+            f"{BINANCE_SPOT_BASE}/ticker/price",
+        ]
+        for endpoint in endpoints:
+            try:
+                resp = session.get(endpoint, params={'symbol': symbol}, timeout=5, verify=False)
+                resp.raise_for_status()
+                return float(resp.json().get('price', 0))
+            except Exception:
+                continue
+        return None
+
+    def _normalize_ohlcv_rows(self, rows):
+        return [{
+            'timestamp': int(k[0]),
+            'open': float(k[1]),
+            'high': float(k[2]),
+            'low': float(k[3]),
+            'close': float(k[4]),
+            'volume': float(k[5])
+        } for k in rows]
+
+    def _map_mexc_interval(self, timeframe):
+        mapping = {
+            '1m': '1m',
+            '5m': '5m',
+            '15m': '15m',
+            '30m': '30m',
+            '1h': '60m',
+            '4h': '4h',
+            '1d': '1d',
+        }
+        return mapping.get(timeframe)

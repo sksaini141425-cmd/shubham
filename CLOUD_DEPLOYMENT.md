@@ -1,51 +1,54 @@
-# ☁️ Cloud Deployment Guide: ProfitBot Pro
+# ☁️ Always-On Cloud Deployment Guide: ProfitBot Pro
 
-This guide explains how to move your bot from your local machine to the cloud (Render, Railway, or AWS) so it can run 24/7 without your computer being on.
-
----
-
-## **1. Prerequisites**
-- A **GitHub** account (free).
-- A **Render.com** account (free tier available).
-- Your Bybit API Keys.
+Since Render's free tier "sleeps" during inactivity, we recommend using **Railway.app** or **Fly.io** for 24/7 background trading. These platforms ensure your bot is always running.
 
 ---
 
-## **2. Step-by-Step Instructions**
+## **🚀 Option 1: Railway.app (Recommended - Easiest)**
+Railway is very robust and won't sleep if you have a small amount of credit (the $5 trial credit is usually enough for a month).
 
-### **Step A: Push Code to GitHub**
-1.  Initialize a Git repo in this folder: `git init`
-2.  Add all files: `git add .`
-3.  Commit: `git commit -m "Cloud deployment ready"`
-4.  Create a new repository on GitHub.
-5.  Push your code: `git remote add origin YOUR_URL` then `git push -u origin main`
-
-### **Step B: Deploy to Render**
-1.  Log into [Render.com](https://dashboard.render.com).
-2.  Click **"New +"** and select **"Blueprint"**.
-3.  Connect your GitHub repository.
-4.  Render will automatically detect the [render.yaml](file:///c:/Users/sksai/OneDrive/Desktop/automated-trading-bot/render.yaml) file.
-5.  Click **"Apply"**.
-
----
-
-## **3. Critical: Environment Variables**
-Once the deployment starts, go to the **Environment** tab in Render and add your secrets (never upload these to GitHub!):
-- `BYBIT_API_KEY`: Your Bybit key.
-- `BYBIT_API_SECRET`: Your Bybit secret.
-- `GEMINI_API_KEY`: (Optional) For AI intelligence.
-- `USE_REAL_EXCHANGE`: Set to `true` when you want real trading.
+### **Step-by-Step Instructions**
+1.  **Push to GitHub**:
+    -   Initialize Git: `git init`
+    -   Add files: `git add .`
+    -   Commit: `git commit -m "Always-on deployment ready"`
+    -   Create a repo on GitHub and push: `git remote add origin YOUR_URL` then `git push -u origin main`
+2.  **Deploy to Railway**:
+    -   Log into [Railway.app](https://railway.app).
+    -   Click **"New Project"** -> **"Deploy from GitHub repo"**.
+    -   Select your repository.
+3.  **Add Environment Variables** (Critical!):
+    -   Go to the **Variables** tab in Railway and add:
+        -   `STRATEGY`: `multitimeframe`
+        -   `LEVERAGE`: `3`
+        -   `MAX_TRADES`: `3`
+        -   `AI_PROVIDER`: `gemini`
+        -   `GEMINI_API_KEY`: `AIzaSyBAuL9zIKrA5aO89fRRYQs23c2zF2OSuYE`
+        -   `PORT`: `5000`
 
 ---
 
-## **4. Persistent Data**
-I have configured a **Persistent Disk** in the cloud settings. This ensures that your `trade_log.json` and balance history are **never lost**, even if the cloud server restarts.
+## **🛸 Option 2: Fly.io (Professional - Singapore Region)**
+Fly.io is great for running apps close to the exchange servers (like Singapore).
+
+### **Step-by-Step Instructions**
+1.  **Install Fly CLI**:
+    -   Run this in PowerShell: `iwr https://fly.io/install.ps1 -useb | iex`
+2.  **Login**:
+    -   `fly auth login`
+3.  **Deploy**:
+    -   The `fly.toml` is already configured for you.
+    -   Run: `fly launch` (Select "No" when asked to copy configuration, just use existing `fly.toml`).
+    -   Run: `fly deploy`
+4.  **Set Secrets**:
+    -   `fly secrets set GEMINI_API_KEY=AIzaSyBAuL9zIKrA5aO89fRRYQs23c2zF2OSuYE`
+    -   `fly secrets set STRATEGY=multitimeframe`
 
 ---
 
-## **5. Monitoring**
-- Your dashboard will be available at a custom URL (e.g., `https://subham-profitbot.onrender.com`).
-- You can access this URL from your phone or any computer to check your profits in real-time.
+## **🛡️ Critical Checklist**
+- **Persistent Storage**: Ensure you mount a volume for `/app/data` (Railway and Fly support this) to keep your `trade_history.json`.
+- **Environment Tab**: Never put your real API keys in the code. Always use the cloud dashboard's "Variables" or "Secrets" tab.
 
 ---
-*Created on 2026-03-17*
+*Updated on 2026-04-03*

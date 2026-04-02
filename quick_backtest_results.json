@@ -1,0 +1,20 @@
+[
+  {
+    "strategy_name": "Scalper30",
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "total_return": 0.0,
+    "final_capital": 5.0
+  },
+  {
+    "strategy_name": "Multi-Timeframe",
+    "trades": 0,
+    "wins": 0,
+    "losses": 0,
+    "win_rate": 0,
+    "total_return": 0.0,
+    "final_capital": 5.0
+  }
+]

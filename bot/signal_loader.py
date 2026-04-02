@@ -7,16 +7,23 @@ from datetime import datetime, timedelta
 logger = logging.getLogger(__name__)
 
 class SignalLoader:
-    def __init__(self, signals_file=r'C:\Users\sksai\vip_signals.json'):
-        self.signals_file = signals_file
+    def __init__(self, signals_file=None):
+        if not signals_file:
+            # Look for vip_signals.json in the current working directory
+            self.signals_file = os.path.join(os.getcwd(), 'vip_signals.json')
+        else:
+            self.signals_file = signals_file
         self.last_parsed_timestamp = datetime.now() - timedelta(minutes=60) # Only look at recent signals
         
-    def get_new_signals(self, window_minutes=15):
+    def get_new_signals(self, window_minutes=60): # Increased to 60 for testing
         """
         Scans the JSON for signals posted within the last X minutes.
         """
         if not os.path.exists(self.signals_file):
+            logger.warning(f"Signals file not found at: {self.signals_file}")
             return []
+        
+        logger.info(f"Scanning signals file: {self.signals_file}")
             
         try:
             with open(self.signals_file, 'r', encoding='utf-8') as f:
@@ -33,7 +40,8 @@ class SignalLoader:
         for item in data[:50]: # Check the latest 50 messages
             try:
                 date_str = item.get('date', '').replace('Z', '+00:00')
-                msg_date = datetime.fromisoformat(date_str)
+                # Ensure we handle both aware and naive strings by making the result naive for comparison
+                msg_date = datetime.fromisoformat(date_str).replace(tzinfo=None)
                 
                 if msg_date > cutoff:
                     parsed = self._parse_signal_text(item.get('text', ''), item.get('group', ''))

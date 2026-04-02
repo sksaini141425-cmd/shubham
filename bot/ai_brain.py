@@ -1,6 +1,8 @@
 import google.generativeai as genai
 import logging
 import os
+import requests
+import json
 
 logger = logging.getLogger("AIBrain")
 
@@ -8,38 +10,35 @@ logger = logging.getLogger("AIBrain")
 _conversation_history = {}
 
 class AIBrain:
-    def __init__(self, api_key=None):
+    def __init__(self, api_key=None, provider="gemini", deepseek_key=None):
         self.api_key = api_key
+        self.deepseek_key = deepseek_key or os.environ.get("DEEPSEEK_API_KEY")
+        self.provider = os.environ.get("AI_PROVIDER", provider).lower()
         self.model = None
 
-        if self.api_key:
+        if self.provider == "gemini" and self.api_key:
             try:
                 genai.configure(api_key=self.api_key)
-                self.model = genai.GenerativeModel("gemini-1.5-flash")
-                logger.info("AI Brain initialized with gemini-1.5-flash")
+                self.model = genai.GenerativeModel("models/gemini-3-flash-preview")
+                logger.info("AI Brain initialized with gemini-3-flash-preview")
             except Exception:
                 try:
-                    self.model = genai.GenerativeModel("models/gemini-pro")
-                    logger.info("AI Brain initialized with gemini-pro fallback")
+                    self.model = genai.GenerativeModel("models/gemini-2.0-flash")
+                    logger.info("AI Brain initialized with gemini-2.0-flash fallback")
                 except Exception as e:
-                    logger.error(f"AI Brain init failed: {e}")
+                    logger.error(f"AI Brain (Gemini) init failed: {e}")
                     self.model = None
+        elif self.provider == "deepseek" and self.deepseek_key:
+            logger.info("AI Brain initialized with DeepSeek")
+        else:
+            logger.warning(f"AI Brain: No valid provider/key found (Provider: {self.provider})")
 
     def generate_reply(self, message, context="", chat_id="default"):
         """
         Generate an AI response using conversation history for memory.
         Context is injected silently so the AI knows live trading state.
         """
-        if not self.model:
-            return None
-
-        # Initialize chat history for this user if not already done
-        if chat_id not in _conversation_history:
-            _conversation_history[chat_id] = []
-
-        history = _conversation_history[chat_id]
-
-        # Build the full prompt with system instructions on the first message
+        # Build the full prompt with system instructions
         system_preamble = (
             "You are 'ProfitBot Pro', an advanced AI Trading Assistant.\n"
             "Personality: Friendly, conversational, highly intelligent. You want the user to succeed.\n"
@@ -48,7 +47,11 @@ class AIBrain:
             "Be concise, warm, and use emojis when appropriate.\n"
         )
 
-        # Build the text prompt including conversation history
+        # Initialize chat history for this user if not already done
+        if chat_id not in _conversation_history:
+            _conversation_history[chat_id] = []
+
+        history = _conversation_history[chat_id]
         history_text = ""
         for turn in history[-10:]:  # Keep last 10 turns to avoid token limit
             role = "User" if turn["role"] == "user" else "Assistant"
@@ -62,27 +65,62 @@ class AIBrain:
             f"Assistant:"
         )
 
-        try:
-            response = self.model.generate_content(full_prompt)
-            reply = response.text.strip()
+        reply = None
+        if self.provider == "gemini" and self.model:
+            try:
+                response = self.model.generate_content(full_prompt)
+                reply = response.text.strip()
+            except Exception as e:
+                logger.error(f"Gemini Exception: {e}")
+        elif self.provider == "deepseek" and self.deepseek_key:
+            reply = self._call_deepseek(full_prompt)
 
+        if reply:
             # Update history
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": reply})
             _conversation_history[chat_id] = history
-
             return reply
-        except Exception as e:
-            logger.error(f"AI Brain Exception: {e}")
-            return None
+
+        return None
 
     def generate_response(self, prompt, context_title="Analysis"):
         """Simple wrapper for generic AI processing."""
-        if not self.model:
-            return ""
+        if self.provider == "gemini" and self.model:
+            try:
+                response = self.model.generate_content(prompt)
+                return response.text.strip()
+            except Exception as e:
+                logger.error(f"Gemini Response Error: {e}")
+        elif self.provider == "deepseek" and self.deepseek_key:
+            return self._call_deepseek(prompt)
+        return ""
+
+    def _call_deepseek(self, prompt, system_prompt=None):
+        """Helper to call DeepSeek API using requests."""
+        url = "https://api.deepseek.com/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.deepseek_key}"
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        data = {
+            "model": "deepseek-chat",
+            "messages": messages,
+            "temperature": 0.7,
+            "max_tokens": 1024
+        }
+
         try:
-            response = self.model.generate_content(prompt)
-            return response.text.strip()
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            response.raise_for_status()
+            result = response.json()
+            return result['choices'][0]['message']['content'].strip()
         except Exception as e:
-            logger.error(f"AI Brain Simple Response Error: {e}")
+            logger.error(f"DeepSeek API Error: {e}")
             return ""

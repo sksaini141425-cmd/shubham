@@ -18,9 +18,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code
 COPY . .
 
+# Set default environment variables (can be overridden in the cloud dashboard)
+ENV STRATEGY="multitimeframe"
+ENV LEVERAGE="3"
+ENV MAX_TRADES="3"
+ENV PORT="5000"
+ENV USE_REAL_EXCHANGE="false"
+
 # Expose the dashboard port
 EXPOSE 5000
 
 # Run the bot with recommended cloud settings
 # Note: We use main.py directly. Environment variables should be set in the cloud provider UI.
-CMD ["python", "main.py", "--port", "5000", "--strategy", "scalper70", "--leverage", "50", "--max_trades", "10"]
+CMD ["sh", "-c", "python main.py --port $PORT --strategy $STRATEGY --leverage $LEVERAGE --max_trades $MAX_TRADES"]

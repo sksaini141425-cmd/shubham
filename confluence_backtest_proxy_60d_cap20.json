@@ -1,0 +1,157 @@
+{
+  "symbol": "BTCUSDT",
+  "days": 60,
+  "mode": "proxy",
+  "capital": 20.0,
+  "leverage": 5,
+  "risk_per_trade": 0.01,
+  "min_notional": 20.0,
+  "signals": {
+    "NONE": 16969,
+    "LONG": 10,
+    "SHORT": 1
+  },
+  "signal_reasons_top": [
+    [
+      "Support bounce near 68741.40, Funding -0.000299 <= -0.000250, Retail longs 34.0% <= 35.0%, Open interest -37.97% with price capitulation",
+      3
+    ],
+    [
+      "Support bounce near 66171.80, Funding -0.000337 <= -0.000250, Retail longs 30.8% <= 35.0%",
+      2
+    ],
+    [
+      "Support bounce near 69112.10, Funding -0.000265 <= -0.000250, Retail longs 23.3% <= 35.0%",
+      1
+    ],
+    [
+      "Support bounce near 65359.10, Funding -0.000600 <= -0.000250, Retail longs 20.0% <= 35.0%",
+      1
+    ],
+    [
+      "Resistance rejection near 71524.90, Funding 0.000334 >= 0.000250, Retail longs 69.6% >= 65.0%",
+      1
+    ],
+    [
+      "Support bounce near 62655.00, Funding -0.000366 <= -0.000250, Retail longs 20.0% <= 35.0%, Open interest -44.16% with price capitulation",
+      1
+    ],
+    [
+      "Support bounce near 68121.60, Funding -0.000449 <= -0.000250, Retail longs 20.0% <= 35.0%, Open interest -33.36% with price capitulation",
+      1
+    ],
+    [
+      "Support bounce near 69722.60, Funding -0.000258 <= -0.000250, Retail longs 27.8% <= 35.0%, Open interest -1.40% with price capitulation",
+      1
+    ]
+  ],
+  "blocked_entries": {
+    "below_min_notional": 1
+  },
+  "executed_trades": 7,
+  "wins": 0,
+  "losses": 7,
+  "win_rate_pct": 0.0,
+  "starting_equity": 20.0,
+  "ending_equity": 18.842843,
+  "return_pct": -5.79,
+  "max_drawdown_pct": 7.3,
+  "assumptions": {
+    "static_mode": "Reuses the current market_context.json snapshot for every historical candle.",
+    "proxy_mode": "Derives funding, retail crowding, fear/greed, and OI proxies from historical price/volume. This is an inference, not real historical sentiment data.",
+    "execution": "Single BTC position at a time, 0.05% taker fee per side, conservative intrabar exits when both TP and SL touch the same candle."
+  },
+  "trades": [
+    {
+      "side": "LONG",
+      "entry_time": "2026-02-05T13:50:00+00:00",
+      "exit_time": "2026-02-05T15:00:00+00:00",
+      "entry_price": 69628.3,
+      "exit_price": 69007.92596891167,
+      "size": 0.00032,
+      "notional": 22.281056000000003,
+      "gross_pnl": -0.19852,
+      "net_pnl": -0.220701,
+      "exit_reason": "Stop loss hit intrabar",
+      "signal_reason": "Support bounce near 69112.10, Funding -0.000265 <= -0.000250, Retail longs 23.3% <= 35.0%"
+    },
+    {
+      "side": "SHORT",
+      "entry_time": "2026-02-08T14:40:00+00:00",
+      "exit_time": "2026-02-08T20:40:00+00:00",
+      "entry_price": 71099.9,
+      "exit_price": 71056.9,
+      "size": 0.00039,
+      "notional": 27.728960999999998,
+      "gross_pnl": 0.01677,
+      "net_pnl": -0.010951,
+      "exit_reason": "Time exit after 6.00 hours",
+      "signal_reason": "Resistance rejection near 71524.90, Funding 0.000334 >= 0.000250, Retail longs 69.6% >= 65.0%"
+    },
+    {
+      "side": "LONG",
+      "entry_time": "2026-02-15T16:25:00+00:00",
+      "exit_time": "2026-02-15T17:45:00+00:00",
+      "entry_price": 69044.1,
+      "exit_price": 68672.3559,
+      "size": 0.00053,
+      "notional": 36.593373,
+      "gross_pnl": -0.197024,
+      "net_pnl": -0.233519,
+      "exit_reason": "Stop loss hit intrabar",
+      "signal_reason": "Support bounce near 68741.40, Funding -0.000299 <= -0.000250, Retail longs 34.0% <= 35.0%, Open interest -37.97% with price capitulation"
+    },
+    {
+      "side": "LONG",
+      "entry_time": "2026-02-24T06:05:00+00:00",
+      "exit_time": "2026-02-24T12:05:00+00:00",
+      "entry_price": 63184.0,
+      "exit_price": 63177.2,
+      "size": 0.00032,
+      "notional": 20.218880000000002,
+      "gross_pnl": -0.002176,
+      "net_pnl": -0.022394,
+      "exit_reason": "Time exit after 6.00 hours",
+      "signal_reason": "Support bounce near 62655.00, Funding -0.000366 <= -0.000250, Retail longs 20.0% <= 35.0%, Open interest -44.16% with price capitulation"
+    },
+    {
+      "side": "LONG",
+      "entry_time": "2026-03-06T16:35:00+00:00",
+      "exit_time": "2026-03-06T17:30:00+00:00",
+      "entry_price": 68630.5,
+      "exit_price": 68030.4979272989,
+      "size": 0.00032,
+      "notional": 21.96176,
+      "gross_pnl": -0.192001,
+      "net_pnl": -0.213866,
+      "exit_reason": "Stop loss hit intrabar",
+      "signal_reason": "Support bounce near 68121.60, Funding -0.000449 <= -0.000250, Retail longs 20.0% <= 35.0%, Open interest -33.36% with price capitulation"
+    },
+    {
+      "side": "LONG",
+      "entry_time": "2026-03-26T08:55:00+00:00",
+      "exit_time": "2026-03-26T09:30:00+00:00",
+      "entry_price": 69985.9,
+      "exit_price": 69652.6141,
+      "size": 0.00057,
+      "notional": 39.891963,
+      "gross_pnl": -0.189973,
+      "net_pnl": -0.22977,
+      "exit_reason": "Stop loss hit intrabar",
+      "signal_reason": "Support bounce near 69722.60, Funding -0.000258 <= -0.000250, Retail longs 27.8% <= 35.0%, Open interest -1.40% with price capitulation"
+    },
+    {
+      "side": "LONG",
+      "entry_time": "2026-04-02T05:20:00+00:00",
+      "exit_time": "2026-04-02T11:15:00+00:00",
+      "entry_price": 66449.9,
+      "exit_price": 66105.3501,
+      "size": 0.00055,
+      "notional": 36.547444999999996,
+      "gross_pnl": -0.189502,
+      "net_pnl": -0.225955,
+      "exit_reason": "Stop loss hit intrabar",
+      "signal_reason": "Support bounce near 66171.80, Funding -0.000337 <= -0.000250, Retail longs 30.8% <= 35.0%"
+    }
+  ]
+}

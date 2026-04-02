@@ -1,0 +1,54 @@
+{
+  "symbol": "BTCUSDT",
+  "days": 20,
+  "mode": "proxy",
+  "capital": 10.0,
+  "leverage": 5,
+  "risk_per_trade": 0.01,
+  "min_notional": 20.0,
+  "signals": {
+    "NONE": 5457,
+    "LONG": 3
+  },
+  "signal_reasons_top": [
+    [
+      "Support bounce near 66171.80, Funding -0.000337 <= -0.000250, Retail longs 30.8% <= 35.0%",
+      2
+    ],
+    [
+      "Support bounce near 69722.60, Funding -0.000258 <= -0.000250, Retail longs 27.8% <= 35.0%, Open interest -1.40% with price capitulation",
+      1
+    ]
+  ],
+  "blocked_entries": {
+    "below_min_notional": 2
+  },
+  "executed_trades": 1,
+  "wins": 0,
+  "losses": 1,
+  "win_rate_pct": 0.0,
+  "starting_equity": 10.0,
+  "ending_equity": 9.8831,
+  "return_pct": -1.17,
+  "max_drawdown_pct": 1.21,
+  "assumptions": {
+    "static_mode": "Reuses the current market_context.json snapshot for every historical candle.",
+    "proxy_mode": "Derives funding, retail crowding, fear/greed, and OI proxies from historical price/volume. This is an inference, not real historical sentiment data.",
+    "execution": "Single BTC position at a time, 0.05% taker fee per side, conservative intrabar exits when both TP and SL touch the same candle."
+  },
+  "trades": [
+    {
+      "side": "LONG",
+      "entry_time": "2026-03-26T08:55:00+00:00",
+      "exit_time": "2026-03-26T09:30:00+00:00",
+      "entry_price": 69985.9,
+      "exit_price": 69652.6141,
+      "size": 0.00029,
+      "notional": 20.295910999999997,
+      "gross_pnl": -0.096653,
+      "net_pnl": -0.1169,
+      "exit_reason": "Stop loss hit intrabar",
+      "signal_reason": "Support bounce near 69722.60, Funding -0.000258 <= -0.000250, Retail longs 27.8% <= 35.0%, Open interest -1.40% with price capitulation"
+    }
+  ]
+}

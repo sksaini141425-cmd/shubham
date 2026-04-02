@@ -1,0 +1,12 @@
+{
+  "symbol": "BTCUSDT",
+  "support_level": 65657,
+  "resistance_level": 69133,
+  "fear_greed_index": 12,
+  "fear_greed_previous": 12,
+  "retail_long_ratio_pct": 67.2,
+  "funding_rate": -0.000114,
+  "open_interest_change_pct_1h": null,
+  "news_bias": "neutral",
+  "notes": "Seeded from the manual market read on 2026-04-02. Update this file before live decisions."
+}

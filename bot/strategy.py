@@ -222,6 +222,75 @@ def calculate_adx(data_list, period=14):
         
     return adx
 
+def calculate_stochastic_rsi(data_list, period=14, smooth_k=3, smooth_d=3):
+    """Calculate Stochastic RSI indicator"""
+    if len(data_list) < period + 1:
+        return [None] * len(data_list)
+        
+    # Calculate RSI first
+    rsi_values = calculate_rsi(data_list, period)
+    
+    # Calculate Stochastic of RSI
+    stoch_rsi = [None] * (period - 1)
+    
+    for i in range(period - 1, len(rsi_values)):
+        if rsi_values[i] is None:
+            stoch_rsi.append(None)
+            continue
+            
+        # Find highest and lowest RSI in the period
+        rsi_window = rsi_values[i-period+1:i+1]
+        valid_rsi = [r for r in rsi_window if r is not None]
+        
+        if not valid_rsi:
+            stoch_rsi.append(None)
+            continue
+            
+        highest_rsi = max(valid_rsi)
+        lowest_rsi = min(valid_rsi)
+        
+        # Calculate Stochastic RSI
+        if highest_rsi == lowest_rsi:
+            stoch_rsi_val = 50.0
+        else:
+            stoch_rsi_val = ((rsi_values[i] - lowest_rsi) / (highest_rsi - lowest_rsi)) * 100
+            
+        stoch_rsi.append(stoch_rsi_val)
+    
+    # Apply smoothing
+    if len(stoch_rsi) > smooth_k:
+        smoothed_k = []
+        for i in range(smooth_k - 1):
+            smoothed_k.append(stoch_rsi[i])
+            
+        for i in range(smooth_k - 1, len(stoch_rsi)):
+            # Filter out None values for smoothing
+            window = stoch_rsi[i-smooth_k+1:i+1]
+            valid_window = [x for x in window if x is not None]
+            if valid_window:
+                smoothed_k.append(sum(valid_window) / len(valid_window))
+            else:
+                smoothed_k.append(None)
+            
+        # Apply %D smoothing
+        if len(smoothed_k) > smooth_d:
+            smoothed_d = []
+            for i in range(smooth_d - 1):
+                smoothed_d.append(smoothed_k[i])
+                
+            for i in range(smooth_d - 1, len(smoothed_k)):
+                # Filter out None values for smoothing
+                window = smoothed_k[i-smooth_d+1:i+1]
+                valid_window = [x for x in window if x is not None]
+                if valid_window:
+                    smoothed_d.append(sum(valid_window) / len(valid_window))
+                else:
+                    smoothed_d.append(None)
+                
+            return smoothed_d
+            
+    return stoch_rsi
+
 class SmartMoneyStrategy(BaseStrategy):
     def __init__(self, leverage=45):
         super().__init__(leverage=leverage)
